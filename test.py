@@ -35,9 +35,11 @@ class AuthWindow(CTk):
 
         self.entry_password = CTkEntry(self, width=200, show="*")
         self.entry_password.pack(pady=5)
+        self.entry_password.bind("<Return>", lambda event: self.authenticate())  # Обработка Enter в поле пароля
 
         self.button_login = CTkButton(self, text="Войти", command=self.authenticate)
         self.button_login.pack(pady=10)
+        self.entry_login.bind("<Return>", lambda event: self.entry_password.focus())
 
     def authenticate(self):
         username = self.entry_login.get()
