@@ -984,6 +984,7 @@ class ProductionPlanningTab(CTkFrame):
         super().__init__(parent)
         self.parent = parent
         self.current_order_id = None
+        self._first_draw = True  # Флаг первого отображения
 
         # Основные фреймы
         self.left_frame = CTkFrame(self, width=300)
@@ -1098,6 +1099,14 @@ class ProductionPlanningTab(CTkFrame):
         self.calendar_frame = CTkFrame(self.right_frame)
         self.calendar_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
+       # Загрузка данных
+        self.load_production_orders()
+
+        # Загрузка данных и отрисовка календаря
+        self.after(100, self.update_calendar)  # Запускаем через небольшой таймаут
+        self.bind("<Visibility>", self.on_visibility_changed)
+        self.bind("<Configure>", self.on_resize)  # Обработчик изменения размеров
+
         # Панель навигации по месяцам
         self.calendar_nav_frame = CTkFrame(self.calendar_frame)
         self.calendar_nav_frame.pack(fill=tk.X, pady=5)
@@ -1126,15 +1135,30 @@ class ProductionPlanningTab(CTkFrame):
         # Загрузка данных и отрисовка календаря
         self.update_calendar()
 
+    def on_visibility_changed(self, event):
+        """Обработчик изменения видимости вкладки"""
+        if self._first_draw and self.winfo_ismapped():
+            self._first_draw = False
+            self.after(100, self.update_calendar)
+
+    def on_resize(self, event):
+        """Обработчик изменения размеров"""
+        if self.winfo_ismapped():  # Проверяем, что вкладка видима
+            self.update_calendar()
+
     def update_calendar(self):
         """Обновление отображения календаря"""
+        if not self.winfo_ismapped():  # Не обновляем, если вкладка не видна
+            return
+
+        if not self.calendar_canvas.winfo_exists():
+            return
+
         self.calendar_canvas.delete("all")
         self.month_label.configure(text=f"{self.current_month}.{self.current_year}")
 
         # Получаем все заказы
         orders = get_production_orders()
-        if not orders:
-            return
 
         # Определяем первый и последний день месяца
         first_day = datetime(self.current_year, self.current_month, 1).date()
@@ -1147,6 +1171,8 @@ class ProductionPlanningTab(CTkFrame):
         # Настройки отображения
         canvas_width = self.calendar_canvas.winfo_width()
         canvas_height = self.calendar_canvas.winfo_height()
+        if canvas_width < 10 or canvas_height < 10:  # Минимальные размеры
+            return
         day_width = canvas_width / 7
         day_height = canvas_height / 6  # Максимум 6 недель в месяце
 
@@ -1364,6 +1390,7 @@ class ProductionPlanningTab(CTkFrame):
 
         add_production_order(name, customer, deadline_date.strftime("%Y-%m-%d"), priority, "В ожидании")
         self.load_production_orders()
+        self.update_calendar()
 
         # Очистка полей
         self.order_name_entry.delete(0, tk.END)
@@ -1527,6 +1554,7 @@ class ProductionPlanningTab(CTkFrame):
         update_production_order_status(self.current_order_id, new_status)
         self.load_production_orders()
         self.show_order_details(None)
+        self.update_calendar()
 
     def delete_order(self):
         """Удаление производственного заказа"""
@@ -1545,86 +1573,7 @@ class ProductionPlanningTab(CTkFrame):
             # Очищаем таблицу стеклопакетов
             for item in self.windows_tree.get_children():
                 self.windows_tree.delete(item)
-
-    def update_production_calendar(self):
-        """Обновление календаря производства"""
-        self.calendar_canvas.delete("all")
-
-        # Получаем все заказы
-        orders = get_production_orders()
-        if not orders:
-            return
-
-        # Определяем временной диапазон (2 недели от текущей даты)
-        today = datetime.now().date()
-        start_date = today - timedelta(days=today.weekday())
-        end_date = start_date + timedelta(days=13)  # 2 недели
-
-        # Настройки отображения
-        canvas_width = self.calendar_canvas.winfo_width()
-        canvas_height = self.calendar_canvas.winfo_height()
-        day_width = canvas_width / 7
-        row_height = 30
-
-        # Рисуем заголовок с днями недели
-        days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        for i, day in enumerate(days):
-            x = i * day_width
-            self.calendar_canvas.create_rectangle(x, 0, x + day_width, row_height, fill="#444444", outline="black")
-            self.calendar_canvas.create_text(x + day_width / 2, row_height / 2, text=day, fill="white",
-                                             font=("Arial", 10))
-
-        # Рисуем сетку календаря
-        for i in range(14):  # 2 недели
-            for j in range(7):  # 7 дней в неделе
-                x = j * day_width
-                y = (i + 1) * row_height
-                self.calendar_canvas.create_rectangle(x, y, x + day_width, y + row_height, fill="#555555",
-                                                      outline="black")
-
-                # Подписи дат
-                if i < 2:  # Только для первой недели
-                    date = start_date + timedelta(days=i * 7 + j)
-                    self.calendar_canvas.create_text(x + 5, y + 5,
-                                                     text=date.strftime("%d.%m"),
-                                                     anchor="nw", fill="white", font=("Arial", 8))
-
-        # Отображаем заказы на календаре
-        for order in orders:
-            order_id, name, customer, deadline, priority, status = order
-            deadline_date = datetime.strptime(deadline, "%Y-%m-%d").date()
-
-            # Определяем цвет в зависимости от приоритета
-            colors = {
-                "Низкий": "#4CAF50",
-                "Средний": "#2196F3",
-                "Высокий": "#FF9800",
-                "Критичный": "#F44336"
-            }
-            color = colors.get(priority, "#2196F3")
-
-            # Определяем положение на календаре
-            if start_date <= deadline_date <= end_date:
-                delta = (deadline_date - start_date).days
-                week = delta // 7
-                day = delta % 7
-
-                x = day * day_width
-                y = (week + 1) * row_height
-
-                self.calendar_canvas.create_rectangle(
-                    x, y, x + day_width, y + row_height,
-                    fill=color, outline="black"
-                )
-
-                # Сокращенное название заказа
-                short_name = name[:15] + "..." if len(name) > 15 else name
-                self.calendar_canvas.create_text(
-                    x + 5, y + 5,
-                    text=f"{short_name} ({status})",
-                    anchor="nw", fill="white", font=("Arial", 8)
-                )
-
+        self.update_calendar()
 
 
 class CuttingOptimizer(CTk):
