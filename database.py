@@ -29,9 +29,10 @@ def create_database():
            CREATE TABLE IF NOT EXISTS production_order_windows (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
                order_id INTEGER NOT NULL,
+               type TEXT NOT NULL,
                width INTEGER NOT NULL,
                height INTEGER NOT NULL,
-               type TEXT NOT NULL,
+               quantity INTEGER NOT NULL,
                FOREIGN KEY(order_id) REFERENCES production_orders(id)
            )
        """)
@@ -39,13 +40,13 @@ def create_database():
     conn.commit()
     conn.close()
 
-def add_order_to_db(width, height, package_type):
+def add_order_to_db(package_type, width, height, quantity):
     conn = sqlite3.connect('orders.db')
     cursor = conn.cursor()
 
     # Вставляем заказ с указанием типа стеклопакета
-    cursor.execute("INSERT INTO orders (width, height, package_type) VALUES (?, ?, ?)",
-                   (width, height, package_type))
+    cursor.execute("INSERT INTO orders (package_type, width, height, quantity) VALUES (?, ?, ?, ?)",
+                   (package_type, width, height, quantity))
     conn.commit()
     conn.close()
 
@@ -110,13 +111,13 @@ def delete_production_order(order_id):
     conn.commit()
     conn.close()
 
-def add_window_to_production_order(order_id, width, height, window_type):
+def add_window_to_production_order(order_id, window_type, width, height, quantity):
     conn = sqlite3.connect('orders.db')
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO production_order_windows (order_id, width, height, type)
-        VALUES (?, ?, ?, ?)
-    """, (order_id, width, height, window_type))
+        INSERT INTO production_order_windows (order_id, type, width, height, quantity)
+        VALUES (?, ?, ?, ?, ?)
+    """, (order_id, window_type, width, height, quantity))
     conn.commit()
     conn.close()
 
@@ -124,7 +125,7 @@ def get_windows_for_production_order(order_id):
     conn = sqlite3.connect('orders.db')
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, width, height, type 
+        SELECT id, type, width, height, quantity 
         FROM production_order_windows 
         WHERE order_id = ?
         ORDER BY id
