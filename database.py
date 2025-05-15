@@ -79,11 +79,15 @@ def add_production_order(name, customer, deadline, priority, status):
     conn = sqlite3.connect('orders.db')
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO production_orders (name, customer, deadline, priority, status)
-        VALUES (?, ?, ?, ?, ?)
-    """, (name, customer, deadline, priority, status))
+            INSERT INTO production_orders (name, customer, deadline, priority, status)
+            VALUES (?, ?, ?, ?, ?)
+        """, (name, customer, deadline, priority, status))
     conn.commit()
     conn.close()
+    return cursor.lastrowid  # <- Это критически важно!
+
+
+
 
 def get_production_orders():
     conn = sqlite3.connect('orders.db')

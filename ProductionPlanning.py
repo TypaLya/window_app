@@ -501,8 +501,10 @@ class ProductionPlanningTab(CTkFrame):
 
         # Загружаем данные из БД
         windows = get_windows_for_production_order(order_id)
-        for window in windows:
-            self.windows_tree.insert("", tk.END, values=window)
+
+        # Добавляем с порядковым номером
+        for i, window in enumerate(windows, 1):
+            self.windows_tree.insert("", tk.END, values=(i, *window[1:]))  # Пропускаем id и order_id
 
     def add_window_to_order(self):
         """Добавление стеклопакета к заказу"""
@@ -637,50 +639,47 @@ class ProductionPlanningTab(CTkFrame):
         self.update_calendar()
 
     def import_order_from_excel(self):
-        """Импорт заказа из Excel файла"""
+        """Импорт заказа из Excel (всегда создаёт новый заказ)"""
         file_path = filedialog.askopenfilename(
             title="Выберите файл заказа",
             filetypes=[("Excel files", "*.xls *.xlsx"), ("All files", "*.*")]
         )
-
         if not file_path:
             return
 
         try:
-            # Парсим данные из Excel
+            # 1. Парсим Excel (получаем данные заказа и окон)
             order_data = self.parse_excel_order(file_path)
 
-            # Заполняем поля формы
-            self.order_name_entry.delete(0, tk.END)
-            self.order_name_entry.insert(0, order_data['order_name'])
+            # 2. Создаём НОВЫЙ заказ (игнорируем self.current_order_id)
+            deadline = datetime.strptime(order_data['deadline'], "%d.%m.%Y").strftime("%Y-%m-%d")
+            new_order_id = add_production_order(
+                name=order_data['order_name'],
+                customer=order_data['customer'],
+                deadline=deadline,
+                priority="Средний",
+                status="В ожидании"
+            )
 
-            self.customer_entry.delete(0, tk.END)
-            self.customer_entry.insert(0, order_data['customer'])
+            # 3. Добавляем все стеклопакеты из файла в новый заказ
+            for window in order_data['windows']:
+                add_window_to_production_order(
+                    order_id=new_order_id,  # Привязываем к новому заказу
+                    window_type=window['type'],
+                    width=window['width'],
+                    height=window['height'],
+                    quantity=window['quantity']
+                )
 
-            self.deadline_entry.delete(0, tk.END)
-            self.deadline_entry.insert(0, order_data['deadline'])
-
-            # Устанавливаем приоритет (можно добавить логику определения из файла)
-            self.priority_var.set("Средний")
-
-            k = 0
-            for order in order_data['windows']:
-                print(order)
-                k += 1
-                order_data_for_add = [k]
-                for key, value in order.items():
-                    print(f"{key} = {value}")
-                    order_data_for_add.append(value)
-                print(*order_data_for_add)
-                add_window_to_production_order(*order_data_for_add)
-                print(self.current_order_id)
-                self.load_windows_for_order(self.current_order_id)
-
-            # Показываем сообщение об успехе
-            messagebox.showinfo("Успех", "Данные заказа успешно загружены из файла")
+            # 4. Обновляем интерфейс
+            self.load_production_orders()
+            self.current_order_id = new_order_id  # Выбираем новый заказ
+            self.show_order_details_by_id(new_order_id)
+            messagebox.showinfo("Успех", "Новый заказ создан и данные импортированы!")
 
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось загрузить данные из файла:\n{str(e)}")
+            messagebox.showerror("Ошибка", f"Ошибка импорта:\n{str(e)}")
+            print(f"DEBUG: {e}")  # Для диагностики
 
     def parse_excel_order(self, file_path):
         """Парсинг данных заказа из Excel файла (поддержка .xls и .xlsx)"""
