@@ -1,3 +1,4 @@
+import sqlite3
 import tkinter as tk
 from tkinter import ttk, filedialog
 from datetime import datetime, timedelta
@@ -7,9 +8,214 @@ import xlrd
 from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton, CTkComboBox
 from tkinter import messagebox
 from database import (add_production_order, get_production_orders,
-                     update_production_order_status, delete_production_order,
-                     add_window_to_production_order, get_windows_for_production_order,
-                     delete_window_from_production_order)
+                      update_production_order_status, delete_production_order,
+                      add_window_to_production_order, get_windows_for_production_order,
+                      delete_window_from_production_order, delete_material_from_production_order,
+                      add_material_to_production_order, get_materials_for_production_order)
+
+
+def parse_excel_order(file_path):
+    """Парсинг данных заказа из Excel файла (поддержка .xls и .xlsx)"""
+    try:
+        # Определяем расширение файла
+        ext = file_path.split('.')[-1].lower()
+
+        order_data = {
+            'order_name': '',
+            'customer': '',
+            'deadline': '',
+            'windows': [],
+            'materials': []
+        }
+
+        if ext == 'xls':
+            # Используем xlrd для старых .xls файлов
+            import xlrd
+            book = xlrd.open_workbook(file_path)
+            sheet = book.sheet_by_index(0)
+
+            # Парсим основные данные заказа
+            for row_idx in range(sheet.nrows):
+                row = sheet.row_values(row_idx)
+                # print("row ", row)
+
+                # Номер заказа
+                if not order_data['order_name'] and row and len(row) > 1:
+                    cell_value = str(row[1]).strip()
+                    if "Заказ №" in cell_value:
+                        order_data['order_name'] = cell_value
+                        # print(cell_value)
+
+                # Заказчик
+                if not order_data['customer'] and row and len(row) > 1:
+                    cell_value = str(row[1]).strip()
+                    if "Заказчик:" in cell_value:
+                        customer = str(row[8]).strip() if len(row) > 8 and row[8] else ""
+                        customer = customer.split(',')[0].split('тел.:')[0].strip()
+                        order_data['customer'] = customer
+                        # print(customer)
+
+                # Дата доставки
+                if not order_data['deadline'] and row and len(row) > 1:
+                    cell_value = str(row[17]).strip()
+                    if "Дата изготовления:" in cell_value:
+                        if len(row) > 17 and row[24]:
+                            date_str = str(row[24]).split('\\')[0].strip()
+                            if date_str and date_str != '. .':
+                                if len(date_str.split('.')) == 3 and len(date_str.split('.')[2]) == 2:
+                                    day, month, year = date_str.split('.')
+                                    date_str = f"{day}.{month}.20{year}"
+                                order_data['deadline'] = date_str
+                                # print(date_str)
+
+            # Парсим список стеклопакетов
+            start_parsing = False
+            start_parsing_materials = False
+            one_skip = False
+            for row_idx in range(sheet.nrows):
+                if one_skip:
+                    one_skip = False
+                    continue
+                row = sheet.row_values(row_idx)
+                print("row steklo ", row)
+                # Ищем начало таблицы со стеклопакетами
+                if row and len(row) > 1:
+                    first_cell = str(row[1]).strip()
+                    if first_cell in ["№"] and "Поз" in str(row[3]):
+                        start_parsing = True
+                        one_skip = True
+                        continue
+                    if "Расход комплектующих" in first_cell:
+                        start_parsing_materials = True
+                        continue
+
+                if start_parsing and row and len(row) > 14:
+                    try:
+                        if row[1] and row[5]:
+                            size_str = str(row[15]).replace(' ', '') if len(row) > 15 and row[15] else "0x0"
+                            size_parts = size_str.split('x')
+
+                            quantity = 1
+                            if len(row) > 20 and row[20]:
+                                try:
+                                    quantity = int(float(row[20]))
+                                except:
+                                    quantity = 1
+
+                            window_data = {
+                                'type': str(row[5]).strip(),
+                                'width': int(float(size_parts[0])) if size_parts[0] else 0,
+                                'height': int(float(size_parts[1])) if len(size_parts) > 1 and size_parts[1] else 0,
+                                'quantity': quantity
+                            }
+                            order_data['windows'].append(window_data)
+                            # print(window_data, "     dsfsd")
+                            # for key, value in window_data.items():
+                            #     print(f"{key}: {value}")
+                        else:
+                            start_parsing = False
+                    except (ValueError, IndexError, AttributeError) as e:
+                        print(f"Ошибка при парсинге строки {row_idx}: {e}")
+                        continue
+                if start_parsing_materials and row and len(row) > 30:
+                    try:
+                        if row[1] and row[25] and row[30]:
+                            material_str = str(row[1]).strip()
+                            material_amount = float(row[25])
+                            materiaL_dimension = str(row[30]).strip()
+
+                            material_data = {
+                                'type': material_str,
+                                'amount': material_amount,
+                                'dimension': materiaL_dimension
+                            }
+
+                            order_data['materials'].append(material_data)
+                            print(material_data, "     dsfsd")
+                            for key, value in material_data.items():
+                                print(f"{key}: {value}")
+                        else:
+                            start_parsing_materials = False
+                    except (ValueError, IndexError, AttributeError) as e:
+                        print(f"Ошибка при парсинге строки {row_idx}: {e}")
+                        continue
+
+
+        elif ext == 'xlsx':
+            # Используем openpyxl для новых .xlsx файлов
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path)
+            sheet = wb.active
+
+            # Парсим основные данные заказа
+            for row in sheet.iter_rows(values_only=True):
+                # Номер заказа
+                if not order_data['order_name'] and row and len(row) > 1:
+                    cell_value = str(row[1]).strip()
+                    if "Заказ №" in cell_value:
+                        order_data['order_name'] = cell_value
+
+                # Заказчик
+                if not order_data['customer'] and row and len(row) > 1:
+                    cell_value = str(row[1]).strip()
+                    if "Заказчик:" in cell_value:
+                        customer = str(row[7]).strip() if len(row) > 7 and row[7] else ""
+                        customer = customer.split(',')[0].split('тел.:')[0].strip()
+                        order_data['customer'] = customer
+
+                # Дата доставки
+                if not order_data['deadline'] and row and len(row) > 1:
+                    cell_value = str(row[1]).strip()
+                    if "Дата доставки:" in cell_value:
+                        if len(row) > 7 and row[7]:
+                            date_str = str(row[7]).split('\\')[0].strip()
+                            if date_str and date_str != '. .':
+                                if len(date_str.split('.')) == 3 and len(date_str.split('.')[2]) == 2:
+                                    day, month, year = date_str.split('.')
+                                    date_str = f"{day}.{month}.20{year}"
+                                order_data['deadline'] = date_str
+
+            # Парсим список стеклопакетов
+            start_parsing = False
+            for row in sheet.iter_rows(values_only=True):
+                # Ищем начало таблицы со стеклопакетами
+                if row and len(row) > 1:
+                    first_cell = str(row[1]).strip()
+                    if first_cell in ["№", "¹"] and "Поз" in str(row[3]):
+                        start_parsing = True
+                        continue
+
+                if start_parsing and row and len(row) > 14:
+                    try:
+                        if isinstance(row[0], (int, float)) and row[4] and any(
+                                x in str(row[4]) for x in ["СПД", "СПО", "ÑÏÄ", "ÑÏÎ"]):
+                            size_str = str(row[14]).replace(' ', '') if len(row) > 14 and row[14] else "0x0"
+                            size_parts = size_str.split('x')
+
+                            quantity = 1
+                            if len(row) > 19 and row[19]:
+                                try:
+                                    quantity = int(float(row[19]))
+                                except:
+                                    quantity = 1
+
+                            window_data = {
+                                'type': str(row[4]).strip(),
+                                'width': int(float(size_parts[0])) if size_parts[0] else 0,
+                                'height': int(float(size_parts[1])) if len(size_parts) > 1 and size_parts[1] else 0,
+                                'quantity': quantity
+                            }
+                            order_data['windows'].append(window_data)
+                    except (ValueError, IndexError, AttributeError) as e:
+                        print(f"Ошибка при парсинге строки: {e}")
+                        continue
+        else:
+            raise Exception("Неподдерживаемый формат файла. Используйте .xls или .xlsx")
+
+        return order_data
+
+    except Exception as e:
+        raise Exception(f"Ошибка при чтении файла: {str(e)}")
 
 
 class ProductionPlanningTab(CTkFrame):
@@ -92,7 +298,6 @@ class ProductionPlanningTab(CTkFrame):
         self.details_notebook = ttk.Notebook(self.details_frame)
         self.details_notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Вкладка с информацией о заказе
         self.info_tab = CTkFrame(self.details_notebook)
         self.details_notebook.add(self.info_tab, text="Информация")
 
@@ -116,7 +321,8 @@ class ProductionPlanningTab(CTkFrame):
         self.delete_window_button.pack(side=tk.LEFT, padx=5)
 
         # Таблица стеклопакетов
-        self.windows_tree = ttk.Treeview(self.windows_tab, columns=("id", "type", "width", "height", "quantity"), show="headings")
+        self.windows_tree = ttk.Treeview(self.windows_tab, columns=("id", "type", "width", "height", "quantity"),
+                                         show="headings")
         self.windows_tree.heading("id", text="ID")
         self.windows_tree.heading("type", text="Тип")
         self.windows_tree.heading("width", text="Ширина (мм)")
@@ -133,6 +339,45 @@ class ProductionPlanningTab(CTkFrame):
 
         self.windows_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Вкладка с расходами
+        self.materials_tab = CTkFrame(self.details_notebook)
+        self.details_notebook.add(self.materials_tab, text="Расходы")
+
+        # Кнопки управления материалами
+        self.materials_control_frame = CTkFrame(self.materials_tab)
+        self.materials_control_frame.pack(fill=tk.X, pady=5)
+
+        self.add_material_button = CTkButton(self.materials_control_frame,
+                                             text="Добавить материал",
+                                             command=self.add_material_to_order)
+        self.add_material_button.pack(side=tk.LEFT, padx=5)
+
+        self.delete_material_button = CTkButton(self.materials_control_frame,
+                                                text="Удалить материал",
+                                                command=self.delete_material_from_order)
+        self.delete_material_button.pack(side=tk.LEFT, padx=5)
+
+        # Таблица материалов
+        self.materials_tree = ttk.Treeview(self.materials_tab,
+                                           columns=("num", "type", "amount", "dimension"),
+                                           show="headings")
+        self.materials_tree.heading("num", text="№")
+        self.materials_tree.heading("type", text="Материал")
+        self.materials_tree.heading("amount", text="Количество")
+        self.materials_tree.heading("dimension", text="Ед. изм.")
+        self.materials_tree.column("num", width=50, anchor='center')
+        self.materials_tree.column("type", width=200)
+        self.materials_tree.column("amount", width=100, anchor='center')
+        self.materials_tree.column("dimension", width=100, anchor='center')
+
+        materials_scrollbar = ttk.Scrollbar(self.materials_tab,
+                                            orient="vertical",
+                                            command=self.materials_tree.yview)
+        self.materials_tree.configure(yscrollcommand=materials_scrollbar.set)
+
+        self.materials_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        materials_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Календарь производства
         self.calendar_frame = CTkFrame(self.right_frame)
@@ -390,8 +635,9 @@ class ProductionPlanningTab(CTkFrame):
                 self.order_details_text.insert(tk.END, details)
                 self.order_details_text.config(state=tk.DISABLED)
 
-                # Загружаем стеклопакеты для этого заказа
+                # Загружаем стеклопакеты и материалы для этого заказа
                 self.load_windows_for_order(order_id)
+                self.load_materials_for_order(order_id)
                 break
 
     def show_prev_month(self):
@@ -491,6 +737,7 @@ class ProductionPlanningTab(CTkFrame):
 
                 # Загружаем связанные стеклопакеты
                 self.load_windows_for_order(order_id)
+                self.load_materials_for_order(order_id)
                 break
 
     def load_windows_for_order(self, order_id):
@@ -604,9 +851,113 @@ class ProductionPlanningTab(CTkFrame):
             return
 
         if messagebox.askyesno("Подтверждение", "Удалить выбранный стеклопакет?"):
+            print(selection, "===win==", selection[0])
             window_id = self.windows_tree.item(selection[0], "values")[0]
             delete_window_from_production_order(window_id)
             self.load_windows_for_order(self.current_order_id)
+
+    def load_materials_for_order(self, order_id):
+        """Загрузка списка материалов для заказа с нумерацией"""
+        # Очищаем таблицу
+        for item in self.materials_tree.get_children():
+            self.materials_tree.delete(item)
+
+        # Загружаем данные из БД
+        materials = get_materials_for_production_order(order_id)
+
+        # Добавляем материалы в таблицу с порядковым номером
+        for i, material in enumerate(materials, 1):
+            self.materials_tree.insert("", tk.END, values=(i, *material[1:]))
+
+    def add_material_to_order(self):
+        """Добавление материала к заказу"""
+        if not self.current_order_id:
+            messagebox.showwarning("Предупреждение", "Сначала выберите заказ")
+            return
+
+        # Создаем диалоговое окно
+        self.material_dialog = tk.Toplevel(self)
+        self.material_dialog.title("Добавить материал")
+        self.material_dialog.geometry("300x250")
+        self.material_dialog.protocol("WM_DELETE_WINDOW", self.close_window_dialog)
+
+        # Переменные для хранения значений
+        self.material_type_var = tk.StringVar()
+        self.material_amount_var = tk.StringVar(value="1.0")
+        self.material_dimension_var = tk.StringVar(value="шт.")
+
+        # Элементы управления
+        CTkLabel(self.material_dialog, text="Тип материала:").pack(pady=5)
+        type_entry = CTkEntry(self.material_dialog, textvariable=self.material_type_var)
+        type_entry.pack(pady=5)
+        type_entry.focus_set()
+
+        CTkLabel(self.material_dialog, text="Количество:").pack(pady=5)
+        amount_entry = CTkEntry(self.material_dialog, textvariable=self.material_amount_var)
+        amount_entry.pack(pady=5)
+
+        CTkLabel(self.material_dialog, text="Единица измерения:").pack(pady=5)
+        dimension_entry = CTkEntry(self.material_dialog, textvariable=self.material_dimension_var)
+        dimension_entry.pack(pady=5)
+
+        # Кнопки
+        button_frame = CTkFrame(self.material_dialog)
+        button_frame.pack(pady=10)
+
+        CTkButton(button_frame, text="Сохранить",
+                  command=self.save_material).pack(side=tk.LEFT, padx=5)
+        CTkButton(button_frame, text="Отмена",
+                  command=self.material_dialog.destroy).pack(side=tk.RIGHT, padx=5)
+
+    def save_material(self):
+        """Сохранение материала в БД"""
+        try:
+            material_type = self.material_type_var.get()
+            amount = float(self.material_amount_var.get())
+            dimension = self.material_dimension_var.get()
+
+            if not material_type or not dimension:
+                messagebox.showerror("Ошибка", "Все поля должны быть заполнены")
+                return
+
+            if amount <= 0:
+                messagebox.showerror("Ошибка", "Количество должно быть положительным")
+                return
+
+            # Добавляем материал в БД
+            add_material_to_production_order(
+                self.current_order_id,
+                material_type,
+                amount,
+                dimension
+            )
+
+            # Обновляем таблицу материалов
+            self.load_materials_for_order(self.current_order_id)
+
+            # Закрываем диалоговое окно
+            self.material_dialog.destroy()
+
+        except ValueError:
+            messagebox.showerror("Ошибка", "Введите корректные числовые значения")
+
+    def delete_material_from_order(self):
+        """Удаление материала из заказа"""
+        if not self.current_order_id:
+            messagebox.showwarning("Предупреждение", "Сначала выберите заказ")
+            return
+
+        selection = self.materials_tree.selection()
+        if not selection:
+            messagebox.showwarning("Предупреждение", "Выберите материал для удаления")
+            return
+
+        if messagebox.askyesno("Подтверждение", "Удалить выбранный материал?"):
+            print(selection, "===mat==", selection[0])
+            material_id = self.materials_tree.item(selection[0], "values")[0]
+            delete_material_from_production_order(material_id)
+            self.load_materials_for_order(self.current_order_id)
+
 
     def change_order_status(self, new_status):
         """Изменение статуса заказа"""
@@ -648,8 +999,7 @@ class ProductionPlanningTab(CTkFrame):
             return
 
         try:
-            # 1. Парсим Excel (получаем данные заказа и окон)
-            order_data = self.parse_excel_order(file_path)
+            order_data = parse_excel_order(file_path)
 
             # 2. Создаём НОВЫЙ заказ (игнорируем self.current_order_id)
             deadline = datetime.strptime(order_data['deadline'], "%d.%m.%Y").strftime("%Y-%m-%d")
@@ -664,202 +1014,30 @@ class ProductionPlanningTab(CTkFrame):
             # 3. Добавляем все стеклопакеты из файла в новый заказ
             for window in order_data['windows']:
                 add_window_to_production_order(
-                    order_id=new_order_id,  # Привязываем к новому заказу
+                    order_id=new_order_id,
                     window_type=window['type'],
                     width=window['width'],
                     height=window['height'],
                     quantity=window['quantity']
                 )
 
-            # 4. Обновляем интерфейс
+            # 4. Добавляем все материалы из файла в новый заказ
+            for material in order_data['materials']:
+                add_material_to_production_order(
+                    order_id=new_order_id,
+                    material_type=material['type'],
+                    amount=material['amount'],
+                    dimension=material['dimension']
+                )
+
+            # 5. Обновляем интерфейс
             self.load_production_orders()
-            self.current_order_id = new_order_id  # Выбираем новый заказ
+            self.current_order_id = new_order_id
             self.show_order_details_by_id(new_order_id)
             messagebox.showinfo("Успех", "Новый заказ создан и данные импортированы!")
 
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка импорта:\n{str(e)}")
-            print(f"DEBUG: {e}")  # Для диагностики
-
-    def parse_excel_order(self, file_path):
-        """Парсинг данных заказа из Excel файла (поддержка .xls и .xlsx)"""
-        try:
-            # Определяем расширение файла
-            ext = file_path.split('.')[-1].lower()
-
-            order_data = {
-                'order_name': '',
-                'customer': '',
-                'deadline': '',
-                'windows': []
-            }
-
-            if ext == 'xls':
-                # Используем xlrd для старых .xls файлов
-                import xlrd
-                book = xlrd.open_workbook(file_path)
-                sheet = book.sheet_by_index(0)
-
-                # Парсим основные данные заказа
-                for row_idx in range(sheet.nrows):
-                    row = sheet.row_values(row_idx)
-                    # print("row ", row)
-
-                    # Номер заказа (ищем строку, содержащую "Заказ №")
-                    if not order_data['order_name'] and row and len(row) > 1:
-                        cell_value = str(row[1]).strip()
-                        if "Заказ №" in cell_value:
-                            order_data['order_name'] = cell_value
-                            print(cell_value)
-
-                    # Заказчик (ищем строку, где первый столбец содержит "Заказчик:" или "Çàêàç÷èê:")
-                    if not order_data['customer'] and row and len(row) > 1:
-                        cell_value = str(row[1]).strip()
-                        if "Заказчик:" in cell_value:
-                            customer = str(row[8]).strip() if len(row) > 8 and row[8] else ""
-                            # Очищаем от лишней информации (телефонов и т.д.)
-                            customer = customer.split(',')[0].split('тел.:')[0].strip()
-                            order_data['customer'] = customer
-                            print(customer)
-
-                    # Дата доставки (ищем строку, где первый столбец содержит "Дата доставки:" или "Äàòà äîñòàâêè:")
-                    if not order_data['deadline'] and row and len(row) > 1:
-                        cell_value = str(row[17]).strip()
-                        if "Дата изготовления:" in cell_value:
-                            if len(row) > 17 and row[24]:
-                                date_str = str(row[24]).split('\\')[0].strip()
-                                # Пропускаем некорректные даты (например, ". .")
-                                if date_str and date_str != '. .':
-                                    # Преобразуем дату из формата "09.04.25" в "09.04.2025"
-                                    if len(date_str.split('.')) == 3 and len(date_str.split('.')[2]) == 2:
-                                        day, month, year = date_str.split('.')
-                                        date_str = f"{day}.{month}.20{year}"
-                                    order_data['deadline'] = date_str
-                                    print(date_str)
-
-                # Парсим список стеклопакетов (начинаем с строки, где есть заголовок "№")
-                start_parsing = False
-                one_skip = False
-                for row_idx in range(sheet.nrows):
-                    if one_skip:
-                        one_skip = False
-                        continue
-                    row = sheet.row_values(row_idx)
-                    # print("row steklo ", row)
-                    # Ищем начало таблицы со стеклопакетами
-                    if row and len(row) > 1:
-                        first_cell = str(row[1]).strip()
-                        if first_cell in ["№"] and "Поз" in str(row[3]):
-                            start_parsing = True
-                            one_skip = True
-                            continue
-
-                    if start_parsing and row and len(row) > 14:
-                        try:
-                            # Проверяем, что первая ячейка содержит число (номер строки)
-                            if row[1] and row[5]:
-                                # Обрабатываем размеры (удаляем пробелы и разделяем на ширину/высоту)
-                                size_str = str(row[15]).replace(' ', '') if len(row) > 15 and row[15] else "0x0"
-                                size_parts = size_str.split('x')
-
-                                # Получаем количество (может быть в разных столбцах)
-                                quantity = 1
-                                if len(row) > 20 and row[20]:
-                                    try:
-                                        quantity = int(float(row[20]))
-                                    except:
-                                        quantity = 1
-
-                                window_data = {
-                                    'type': str(row[5]).strip(),
-                                    'width': int(float(size_parts[0])) if size_parts[0] else 0,
-                                    'height': int(float(size_parts[1])) if len(size_parts) > 1 and size_parts[1] else 0,
-                                    'quantity': quantity
-                                }
-                                order_data['windows'].append(window_data)
-                                # print(window_data, "     dsfsd")
-                                # for key, value in window_data.items():
-                                #     print(f"{key}: {value}")
-                            else:
-                                start_parsing = False
-                        except (ValueError, IndexError, AttributeError) as e:
-                            print(f"Ошибка при парсинге строки {row_idx}: {e}")
-                            continue
-                print(order_data['windows'])
+            print(f"DEBUG: {e}")
 
 
-            elif ext == 'xlsx':
-                # Используем openpyxl для новых .xlsx файлов
-                import openpyxl
-                wb = openpyxl.load_workbook(file_path)
-                sheet = wb.active
-
-                # Парсим основные данные заказа
-                for row in sheet.iter_rows(values_only=True):
-                    # Номер заказа
-                    if not order_data['order_name'] and row and len(row) > 1:
-                        cell_value = str(row[1]).strip()
-                        if "Заказ №" in cell_value:
-                            order_data['order_name'] = cell_value
-
-                    # Заказчик
-                    if not order_data['customer'] and row and len(row) > 1:
-                        cell_value = str(row[1]).strip()
-                        if "Заказчик:" in cell_value:
-                            customer = str(row[7]).strip() if len(row) > 7 and row[7] else ""
-                            customer = customer.split(',')[0].split('тел.:')[0].strip()
-                            order_data['customer'] = customer
-
-                    # Дата доставки
-                    if not order_data['deadline'] and row and len(row) > 1:
-                        cell_value = str(row[1]).strip()
-                        if "Дата доставки:" in cell_value:
-                            if len(row) > 7 and row[7]:
-                                date_str = str(row[7]).split('\\')[0].strip()
-                                if date_str and date_str != '. .':
-                                    if len(date_str.split('.')) == 3 and len(date_str.split('.')[2]) == 2:
-                                        day, month, year = date_str.split('.')
-                                        date_str = f"{day}.{month}.20{year}"
-                                    order_data['deadline'] = date_str
-
-                # Парсим список стеклопакетов
-                start_parsing = False
-                for row in sheet.iter_rows(values_only=True):
-                    # Ищем начало таблицы со стеклопакетами
-                    if row and len(row) > 1:
-                        first_cell = str(row[1]).strip()
-                        if first_cell in ["№", "¹"] and "Поз" in str(row[3]):
-                            start_parsing = True
-                            continue
-
-                    if start_parsing and row and len(row) > 14:
-                        try:
-                            if isinstance(row[0], (int, float)) and row[4] and any(
-                                    x in str(row[4]) for x in ["СПД", "СПО", "ÑÏÄ", "ÑÏÎ"]):
-                                size_str = str(row[14]).replace(' ', '') if len(row) > 14 and row[14] else "0x0"
-                                size_parts = size_str.split('x')
-
-                                quantity = 1
-                                if len(row) > 19 and row[19]:
-                                    try:
-                                        quantity = int(float(row[19]))
-                                    except:
-                                        quantity = 1
-
-                                window_data = {
-                                    'type': str(row[4]).strip(),
-                                    'width': int(float(size_parts[0])) if size_parts[0] else 0,
-                                    'height': int(float(size_parts[1])) if len(size_parts) > 1 and size_parts[1] else 0,
-                                    'quantity': quantity
-                                }
-                                order_data['windows'].append(window_data)
-                        except (ValueError, IndexError, AttributeError) as e:
-                            print(f"Ошибка при парсинге строки: {e}")
-                            continue
-            else:
-                raise Exception("Неподдерживаемый формат файла. Используйте .xls или .xlsx")
-
-            return order_data
-
-        except Exception as e:
-            raise Exception(f"Ошибка при чтении файла: {str(e)}")

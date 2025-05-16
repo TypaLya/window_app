@@ -37,6 +37,18 @@ def create_database():
            )
        """)
 
+    # Создание таблицы материалов для производственных заказов
+    cursor.execute("""
+            CREATE TABLE IF NOT EXISTS production_order_materials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                amount REAL NOT NULL,
+                dimension TEXT NOT NULL,
+                FOREIGN KEY(order_id) REFERENCES production_orders(id)
+            )
+        """)
+
     conn.commit()
     conn.close()
 
@@ -142,5 +154,35 @@ def delete_window_from_production_order(window_id):
     conn = sqlite3.connect('orders.db')
     cursor = conn.cursor()
     cursor.execute("DELETE FROM production_order_windows WHERE id = ?", (window_id,))
+    conn.commit()
+    conn.close()
+
+def add_material_to_production_order(order_id, material_type, amount, dimension):
+    conn = sqlite3.connect('orders.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO production_order_materials (order_id, type, amount, dimension)
+        VALUES (?, ?, ?, ?)
+    """, (order_id, material_type, amount, dimension))
+    conn.commit()
+    conn.close()
+
+def get_materials_for_production_order(order_id):
+    conn = sqlite3.connect('orders.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, type, amount, dimension 
+        FROM production_order_materials 
+        WHERE order_id = ?
+        ORDER BY id
+    """, (order_id,))
+    materials = cursor.fetchall()
+    conn.close()
+    return materials
+
+def delete_material_from_production_order(material_id):
+    conn = sqlite3.connect('orders.db')
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM production_order_materials WHERE id = ?", (material_id,))
     conn.commit()
     conn.close()
