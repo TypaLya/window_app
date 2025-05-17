@@ -1,23 +1,15 @@
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk
 from typing import Dict, List, Tuple
-from datetime import datetime, timedelta
-from tkinter import simpledialog
 
-import openpyxl
-import xlrd
-from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton, CTkComboBox
+from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
 from tkinter import messagebox
 from Item import NumberItem
-from ItemManager import ItemManager
 from GroupSolver import GroupSolver
 from ProductionPlanning import ProductionPlanningTab
 from Users import check_credentials
 from database import (create_database, add_order_to_db, delete_order_from_db, update_order_in_db,
-                     get_all_orders_from_db, add_production_order, get_production_orders,
-                     update_production_order_status, delete_production_order,
-                     add_window_to_production_order, get_windows_for_production_order,
-                     delete_window_from_production_order)
+                     get_all_orders_from_db)
 
 class AuthWindow(CTk):
     def __init__(self, parent):

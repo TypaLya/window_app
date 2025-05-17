@@ -1,11 +1,10 @@
-import sqlite3
 import tkinter as tk
 from tkinter import ttk, filedialog
 from datetime import datetime, timedelta
 
 import openpyxl
 import xlrd
-from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton, CTkComboBox
+from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkComboBox
 from tkinter import messagebox
 from database import (add_production_order, get_production_orders,
                       update_production_order_status, delete_production_order,
@@ -29,8 +28,6 @@ def parse_excel_order(file_path):
         }
 
         if ext == 'xls':
-            # Используем xlrd для старых .xls файлов
-            import xlrd
             book = xlrd.open_workbook(file_path)
             sheet = book.sheet_by_index(0)
 
@@ -142,8 +139,6 @@ def parse_excel_order(file_path):
 
 
         elif ext == 'xlsx':
-            # Используем openpyxl для новых .xlsx файлов
-            import openpyxl
             wb = openpyxl.load_workbook(file_path)
             sheet = wb.active
 
@@ -378,6 +373,43 @@ class ProductionPlanningTab(CTkFrame):
 
         self.materials_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         materials_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Вкладка со складом
+        self.warehouse_tab = CTkFrame(self.details_notebook)
+        self.details_notebook.add(self.warehouse_tab, text="Склад")
+
+        # Кнопки управления складом
+        self.warehouse_control_frame = CTkFrame(self.warehouse_tab)
+        self.warehouse_control_frame.pack(fill=tk.X, pady=5)
+
+        self.refresh_button = CTkButton(self.warehouse_control_frame,
+                                        text="Обновить",
+                                        command=self.load_warehouse_data)
+        self.refresh_button.pack(side=tk.LEFT, padx=5)
+
+        # Таблица склада
+        self.warehouse_tree = ttk.Treeview(self.warehouse_tab,
+                                           columns=("type", "amount", "dimension"),
+                                           show="headings")
+        self.warehouse_tree.heading("type", text="Материал")
+        self.warehouse_tree.heading("amount", text="Общее количество")
+        self.warehouse_tree.heading("dimension", text="Ед. изм.")
+
+        self.warehouse_tree.column("type", width=250)
+        self.warehouse_tree.column("amount", width=150, anchor='center')
+        self.warehouse_tree.column("dimension", width=100, anchor='center')
+
+        scrollbar = ttk.Scrollbar(self.warehouse_tab,
+                                  orient="vertical",
+                                  command=self.warehouse_tree.yview)
+        self.warehouse_tree.configure(yscrollcommand=scrollbar.set)
+
+        self.warehouse_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Загружаем данные склада при инициализации
+        self.load_warehouse_data()
+
 
         # Календарь производства
         self.calendar_frame = CTkFrame(self.right_frame)
@@ -856,6 +888,46 @@ class ProductionPlanningTab(CTkFrame):
             delete_window_from_production_order(window_id)
             self.load_windows_for_order(self.current_order_id)
 
+    def load_warehouse_data(self):
+        """Загрузка и отображение суммарных данных по материалам"""
+        # Очищаем таблицу
+        for item in self.warehouse_tree.get_children():
+            self.warehouse_tree.delete(item)
+
+        # Получаем все заказы
+        orders = get_production_orders()
+
+        # Создаем словарь для хранения суммарных количеств
+        materials_sum = {}
+
+        # Собираем данные по всем заказам
+        for order in orders:
+            order_id = order[0]
+            materials = get_materials_for_production_order(order_id)
+
+            for material in materials:
+                mat_type = material[1]
+                amount = material[2]
+                dimension = material[3]
+
+                if mat_type not in materials_sum:
+                    materials_sum[mat_type] = {
+                        'amount': 0.0,
+                        'dimension': dimension
+                    }
+
+                materials_sum[mat_type]['amount'] += amount
+
+        # Сортируем материалы по алфавиту
+        sorted_materials = sorted(materials_sum.items(), key=lambda x: x[0])
+
+        # Добавляем данные в таблицу
+        for mat_type, data in sorted_materials:
+            self.warehouse_tree.insert("", tk.END,
+                                       values=(mat_type,
+                                               round(data['amount'], 2),
+                                               data['dimension']))
+
     def load_materials_for_order(self, order_id):
         """Загрузка списка материалов для заказа с нумерацией"""
         # Очищаем таблицу
@@ -908,6 +980,7 @@ class ProductionPlanningTab(CTkFrame):
                   command=self.save_material).pack(side=tk.LEFT, padx=5)
         CTkButton(button_frame, text="Отмена",
                   command=self.material_dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        self.load_warehouse_data()
 
     def save_material(self):
         """Сохранение материала в БД"""
@@ -957,6 +1030,7 @@ class ProductionPlanningTab(CTkFrame):
             material_id = self.materials_tree.item(selection[0], "values")[0]
             delete_material_from_production_order(material_id)
             self.load_materials_for_order(self.current_order_id)
+            self.load_warehouse_data()
 
 
     def change_order_status(self, new_status):
@@ -988,6 +1062,7 @@ class ProductionPlanningTab(CTkFrame):
             for item in self.windows_tree.get_children():
                 self.windows_tree.delete(item)
         self.update_calendar()
+        self.load_warehouse_data()
 
     def import_order_from_excel(self):
         """Импорт заказа из Excel (всегда создаёт новый заказ)"""
@@ -1032,6 +1107,7 @@ class ProductionPlanningTab(CTkFrame):
 
             # 5. Обновляем интерфейс
             self.load_production_orders()
+            self.load_warehouse_data()
             self.current_order_id = new_order_id
             self.show_order_details_by_id(new_order_id)
             messagebox.showinfo("Успех", "Новый заказ создан и данные импортированы!")
