@@ -1,4 +1,5 @@
 import tkinter as tk
+import rectpack
 from tkinter import ttk
 from typing import Dict, List, Tuple, Optional
 
@@ -815,119 +816,232 @@ class GlassCuttingTab(CTkFrame):
         self.load_orders_from_db()
 
     def best_fit_decreasing_algorithm(self, items: List[Dict]) -> List[Dict]:
-        """Улучшенный алгоритм Best-Fit Decreasing с минимальным свободным пространством"""
-        # Сортируем элементы по убыванию площади
-        sorted_items = sorted(items, key=lambda x: x['width'] * x['height'], reverse=True)
+        """Алгоритм с использованием rectpack для оптимального раскроя"""
+
+        packer = rectpack.newPacker(
+            rotation=True,  # Разрешаем поворот
+            sort_algo=rectpack.SORT_AREA,  # Сортировка по площади
+            pack_algo=rectpack.MaxRectsBssf,  # Один из лучших алгоритмов (Best Short Side Fit)
+            bin_algo=rectpack.PackingBin.BBF,  # Best Bin Fit
+        )
+
+        # Добавляем прямоугольники (width, height, id)
+        for item in items:
+            packer.add_rect(item['width'], item['height'], item['id'])
+
+        # Добавляем "бин" (лист стекла)
+        sheet_size = (self.sheet_width, self.sheet_height)
+        max_bins = 999  # Условно большое число, rectpack сам остановится, когда всё упакует
+        for _ in range(max_bins):
+            packer.add_bin(*sheet_size)
+
+        # Выполняем упаковку
+        packer.pack()
 
         sheets = []
 
-        for item in sorted_items:
-            placed = False
-            best_sheet = None
-            best_rotation = None
-            best_rect = None
-            min_waste = float('inf')
+        # Получаем результат
+        for abin in packer:
+            sheet = {
+                'width': self.sheet_width,
+                'height': self.sheet_height,
+                'items': [],
+                'type': None,  # позже подставится
+            }
+            for rect in abin:
+                x, y = rect.x, rect.y
+                w, h = rect.width, rect.height
+                rid = rect.rid
 
-            # Ищем лучший лист для размещения
-            for sheet in sheets:
-                result, rotation, rect, waste = self.find_best_placement(sheet, item)
-                if result and waste < min_waste:
-                    min_waste = waste
-                    best_sheet = sheet
-                    best_rotation = rotation
-                    best_rect = rect
-                    placed = True
+                # Найдём оригинальный item по id, чтобы вернуть тип
+                orig_item = next((i for i in items if i['id'] == rid), None)
+                if orig_item:
+                    sheet['items'].append({
+                        'id': rid,
+                        'x': x,
+                        'y': y,
+                        'width': w,
+                        'height': h,
+                        'rotation': 0 if (orig_item['width'] == w and orig_item['height'] == h) else 90,
+                        'type': orig_item['type'],
+                    })
 
-            # Если нашли подходящий лист
-            if placed:
-                self.place_item(best_sheet, item, best_rotation, best_rect)
-            else:
-                # Создаем новый лист
-                new_sheet = {
-                    'width': self.sheet_width,
-                    'height': self.sheet_height,
-                    'items': [],
-                    'remaining_rectangles': [(0, 0, self.sheet_width, self.sheet_height)]
-                }
-                self.place_item(new_sheet, item, 0, new_sheet['remaining_rectangles'][0])
-                sheets.append(new_sheet)
+            sheets.append(sheet)
 
         return sheets
 
-    def find_best_placement(self, sheet: Dict, item: Dict) -> Tuple[bool, Optional[int], Optional[Tuple], float]:
-        """Находит лучшее место для размещения элемента на листе"""
+    def try_place_on_sheet(self, sheet: Dict, item: Dict) -> bool:
+        """Пытается разместить элемент на конкретном листе без наслоений"""
         best_rotation = None
         best_rect = None
         min_waste = float('inf')
 
-        # Проверяем все возможные повороты (0, 90 градусов)
+        # Проверяем оба варианта поворота
         for rotation in [0, 90]:
             w = item['width'] if rotation == 0 else item['height']
             h = item['height'] if rotation == 0 else item['width']
 
-            # Ищем лучшее место для размещения
-            for i, rect in enumerate(sheet['remaining_rectangles']):
+            # Ищем лучшее место среди всех свободных областей
+            for rect in sheet['remaining_rectangles']:
                 rx, ry, rw, rh = rect
 
                 # Проверяем, помещается ли элемент
                 if w <= rw and h <= rh:
-                    # Вычисляем "отходы" (оставшееся пространство)
-                    waste = (rw * rh) - (w * h)
+                    # Проверяем, не пересекается ли с уже размещенными элементами
+                    if not self.check_collision(sheet, rx, ry, w, h):
+                        waste = (rw * rh) - (w * h)
+                        if waste < min_waste:
+                            min_waste = waste
+                            best_rotation = rotation
+                            best_rect = rect
 
-                    # Если нашли лучшее место
-                    if waste < min_waste:
-                        min_waste = waste
-                        best_rotation = rotation
-                        best_rect = rect
-                        best_rect_index = i
+        # Если нашли подходящее место
+        if best_rect:
+            rx, ry, rw, rh = best_rect
+            w = item['width'] if best_rotation == 0 else item['height']
+            h = item['height'] if best_rotation == 0 else item['width']
 
-        return best_rect is not None, best_rotation, best_rect, min_waste
+            # Добавляем элемент
+            sheet['items'].append({
+                'id': item['id'],
+                'x': rx,
+                'y': ry,
+                'width': w,
+                'height': h,
+                'rotation': best_rotation,
+                'type': item.get('type', 'Неизвестный тип')
+            })
 
-    def place_item(self, sheet: Dict, item: Dict, rotation: int, rect: Tuple):
-        """Размещает элемент на листе и обновляет оставшееся пространство"""
+            # Обновляем оставшееся пространство
+            self.update_remaining_space(sheet, best_rect, w, h)
+            return True
+
+        return False
+
+    def check_collision(self, sheet: Dict, x: int, y: int, w: int, h: int) -> bool:
+        """Проверяет, пересекается ли новый элемент с уже размещенными"""
+        new_rect = (x, y, x + w, y + h)
+
+        for item in sheet['items']:
+            existing_rect = (item['x'], item['y'],
+                             item['x'] + item['width'],
+                             item['y'] + item['height'])
+
+            # Проверка пересечения прямоугольников
+            if not (new_rect[2] <= existing_rect[0] or  # новый слева от существующего
+                    new_rect[0] >= existing_rect[2] or  # новый справа от существующего
+                    new_rect[3] <= existing_rect[1] or  # новый выше существующего
+                    new_rect[1] >= existing_rect[3]):  # новый ниже существующего
+                return True  # есть пересечение
+
+        return False  # нет пересечений
+
+    def update_remaining_space(self, sheet: Dict, rect: Tuple, w: int, h: int):
+        """Обновляет оставшееся пространство на листе"""
         rx, ry, rw, rh = rect
-        w = item['width'] if rotation == 0 else item['height']
-        h = item['height'] if rotation == 0 else item['width']
-
-        # Добавляем элемент
-        sheet['items'].append({
-            'id': item['id'],
-            'x': rx,
-            'y': ry,
-            'width': w,
-            'height': h,
-            'rotation': rotation,
-            'type': item.get('type', 'Неизвестный тип')
-        })
 
         # Удаляем использованный прямоугольник
         sheet['remaining_rectangles'].remove(rect)
 
-        # Добавляем новые прямоугольники из оставшегося пространства
-        remaining_spaces = []
+        # Добавляем новые свободные области
+        new_spaces = []
 
-        # 1. Оставшееся пространство справа (если есть)
+        # 1. Оставшееся пространство справа
         if rw - w > 0:
-            remaining_spaces.append((rx + w, ry, rw - w, h))
+            new_spaces.append((rx + w, ry, rw - w, h))
 
-        # 2. Оставшееся пространство сверху (если есть)
+        # 2. Оставшееся пространство сверху
         if rh - h > 0:
-            remaining_spaces.append((rx, ry + h, w, rh - h))
+            new_spaces.append((rx, ry + h, w, rh - h))
 
-        # 3. Оставшееся пространство в углу (если есть)
+        # 3. Оставшееся пространство в углу
         if rw - w > 0 and rh - h > 0:
-            remaining_spaces.append((rx + w, ry + h, rw - w, rh - h))
+            new_spaces.append((rx + w, ry + h, rw - w, rh - h))
 
-        # Фильтруем слишком маленькие пространства (меньше минимального размера)
-        min_size = 50  # Минимальный размер пространства, которое стоит учитывать
-        remaining_spaces = [
-            space for space in remaining_spaces
+        # Добавляем только значительные пространства
+        min_size = 10  # минимальный учитываемый размер
+        sheet['remaining_rectangles'].extend(
+            space for space in new_spaces
             if space[2] >= min_size and space[3] >= min_size
-        ]
+        )
 
-        # Добавляем оставшиеся пространства и сортируем по площади
-        sheet['remaining_rectangles'].extend(remaining_spaces)
+        # Сортируем по убыванию площади
         sheet['remaining_rectangles'].sort(key=lambda r: r[2] * r[3], reverse=True)
+
+    # def find_best_placement(self, sheet: Dict, item: Dict) -> Tuple[bool, Optional[int], Optional[Tuple], float]:
+    #     """Находит лучшее место для размещения элемента на листе"""
+    #     best_rotation = None
+    #     best_rect = None
+    #     min_waste = float('inf')
+    #
+    #     # Проверяем все возможные повороты (0, 90 градусов)
+    #     for rotation in [0, 90]:
+    #         w = item['width'] if rotation == 0 else item['height']
+    #         h = item['height'] if rotation == 0 else item['width']
+    #
+    #         # Ищем лучшее место для размещения
+    #         for i, rect in enumerate(sheet['remaining_rectangles']):
+    #             rx, ry, rw, rh = rect
+    #
+    #             # Проверяем, помещается ли элемент
+    #             if w <= rw and h <= rh:
+    #                 # Вычисляем "отходы" (оставшееся пространство)
+    #                 waste = (rw * rh) - (w * h)
+    #
+    #                 # Если нашли лучшее место
+    #                 if waste < min_waste:
+    #                     min_waste = waste
+    #                     best_rotation = rotation
+    #                     best_rect = rect
+    #                     best_rect_index = i
+    #
+    #     return best_rect is not None, best_rotation, best_rect, min_waste
+    #
+    # def place_item(self, sheet: Dict, item: Dict, rotation: int, rect: Tuple):
+    #     """Размещает элемент на листе и обновляет оставшееся пространство"""
+    #     rx, ry, rw, rh = rect
+    #     w = item['width'] if rotation == 0 else item['height']
+    #     h = item['height'] if rotation == 0 else item['width']
+    #
+    #     # Добавляем элемент
+    #     sheet['items'].append({
+    #         'id': item['id'],
+    #         'x': rx,
+    #         'y': ry,
+    #         'width': w,
+    #         'height': h,
+    #         'rotation': rotation,
+    #         'type': item.get('type', 'Неизвестный тип')
+    #     })
+    #
+    #     # Удаляем использованный прямоугольник
+    #     sheet['remaining_rectangles'].remove(rect)
+    #
+    #     # Добавляем новые прямоугольники из оставшегося пространства
+    #     remaining_spaces = []
+    #
+    #     # 1. Оставшееся пространство справа (если есть)
+    #     if rw - w > 0:
+    #         remaining_spaces.append((rx + w, ry, rw - w, h))
+    #
+    #     # 2. Оставшееся пространство сверху (если есть)
+    #     if rh - h > 0:
+    #         remaining_spaces.append((rx, ry + h, w, rh - h))
+    #
+    #     # 3. Оставшееся пространство в углу (если есть)
+    #     if rw - w > 0 and rh - h > 0:
+    #         remaining_spaces.append((rx + w, ry + h, rw - w, rh - h))
+    #
+    #     # Фильтруем слишком маленькие пространства (меньше минимального размера)
+    #     min_size = 0  # Минимальный размер пространства, которое стоит учитывать
+    #     remaining_spaces = [
+    #         space for space in remaining_spaces
+    #         if space[2] >= min_size and space[3] >= min_size
+    #     ]
+    #
+    #     # Добавляем оставшиеся пространства и сортируем по площади
+    #     sheet['remaining_rectangles'].extend(remaining_spaces)
+    #     sheet['remaining_rectangles'].sort(key=lambda r: r[2] * r[3], reverse=True)
 
     def update_interface(self):
         """Обновляет все элементы интерфейса после оптимизации"""
