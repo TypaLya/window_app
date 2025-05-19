@@ -4,6 +4,8 @@ from typing import Dict, List, Tuple, Optional
 
 from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
 from tkinter import messagebox
+
+from GlassCutter import GlassCuttingTab
 from Item import NumberItem
 from GroupSolver import GroupSolver
 from ProductionPlanning import ProductionPlanningTab
