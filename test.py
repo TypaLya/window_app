@@ -10,6 +10,8 @@ from ProductionPlanning import ProductionPlanningTab
 from Users import check_credentials
 from database import (create_database, add_order_to_db, delete_order_from_db, update_order_in_db,
                       get_all_orders_from_db, get_windows_for_production_order, get_production_orders)
+from warehouse import WarehouseTab
+
 
 class AuthWindow(CTk):
     def __init__(self, parent):
@@ -1106,6 +1108,10 @@ class CuttingOptimizer(CTk):
         # Вкладка для планирования производства
         self.planning_tab = ProductionPlanningTab(self)
         self.tab_control.add(self.planning_tab, text="Планирование производства")
+
+        # Вкладка для планирования производства
+        self.warehouse_tab = WarehouseTab(self)
+        self.tab_control.add(self.warehouse_tab, text="Склад")
 
         self.tab_control.pack(expand=1, fill="both")
 

@@ -1,5 +1,11 @@
 import sqlite3
 
+def safe_float(value):
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
 # Создаем базу данных и таблицу
 def create_database():
     conn = sqlite3.connect('orders.db')
@@ -49,6 +55,43 @@ def create_database():
             )
         """)
 
+    # Таблица для материалов участка наклейки пленки
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS film_warehouse (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        num TEXT,
+        name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        photo TEXT,
+        start_balance REAL DEFAULT 0,
+        income REAL DEFAULT 0,
+        outcome REAL DEFAULT 0,
+        end_balance REAL DEFAULT 0,
+        reserved REAL DEFAULT 0,
+        in_transit REAL DEFAULT 0,
+        price REAL DEFAULT 0,
+        total_sum REAL DEFAULT 0,
+        last_income_date TEXT,
+        last_move_date TEXT,
+        description TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+
+    # Таблица истории изменений по материалам
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS film_warehouse_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            material_id INTEGER NOT NULL,
+            change_type TEXT NOT NULL,  -- 'income', 'outcome', 'correction'
+            amount REAL NOT NULL,
+            document_ref TEXT,  -- Номер документа-основания
+            notes TEXT,
+            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(material_id) REFERENCES film_warehouse(id)
+        )
+        ''')
+
     conn.commit()
     conn.close()
 
@@ -97,8 +140,6 @@ def add_production_order(name, customer, deadline, priority, status):
     conn.commit()
     conn.close()
     return cursor.lastrowid  # <- Это критически важно!
-
-
 
 
 def get_production_orders():
@@ -186,3 +227,104 @@ def delete_material_from_production_order(material_id):
     cursor.execute("DELETE FROM production_order_materials WHERE id = ?", (material_id,))
     conn.commit()
     conn.close()
+
+
+def add_film_material(data):
+    """Добавление материала на склад пленки (только поля из Excel)"""
+    conn = sqlite3.connect('orders.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    INSERT INTO film_warehouse (
+        num, name, unit, photo, start_balance, income, outcome,
+        end_balance, reserved, in_transit, price, total_sum,
+        last_income_date, last_move_date, description
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        data.get('num'),
+        data['name'],
+        data['unit'],
+        data.get('photo'),
+        safe_float(data.get('start_balance', 0)),
+        safe_float(data.get('income', 0)),
+        safe_float(data.get('outcome', 0)),
+        safe_float(data.get('end_balance', 0)),
+        safe_float(data.get('reserved', 0)),
+        safe_float(data.get('in_transit', 0)),
+        safe_float(data.get('price', 0)),
+        safe_float(data.get('total_sum', 0)),
+        data.get('last_income_date'),
+        data.get('last_move_date'),
+        data.get('description')
+    ))
+
+    conn.commit()
+    material_id = cursor.lastrowid
+    conn.close()
+    return material_id
+
+
+def get_all_film_materials():
+    """Получение всех материалов склада пленки (только нужные поля)"""
+    conn = sqlite3.connect('orders.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    SELECT id, num, name, unit, photo, start_balance, income, outcome,
+           end_balance, reserved, in_transit, price, total_sum,
+           last_income_date, last_move_date, description, updated_at
+    FROM film_warehouse
+    ORDER BY id
+    ''')
+
+    materials = cursor.fetchall()
+    conn.close()
+    return materials
+
+
+def update_film_material(material_id, data):
+    """Обновление данных материала (только исходные поля)"""
+    conn = sqlite3.connect('orders.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+    UPDATE film_warehouse SET
+        num = ?,
+        name = ?,
+        unit = ?,
+        photo = ?,
+        start_balance = ?,
+        income = ?,
+        outcome = ?,
+        end_balance = ?,
+        reserved = ?,
+        in_transit = ?,
+        price = ?,
+        total_sum = ?,
+        last_income_date = ?,
+        last_move_date = ?,
+        description = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    ''', (
+        data.get('num'),
+        data['name'],
+        data['unit'],
+        data.get('photo'),
+        safe_float(data.get('start_balance', 0)),
+        safe_float(data.get('income', 0)),
+        safe_float(data.get('outcome', 0)),
+        safe_float(data.get('end_balance', 0)),
+        safe_float(data.get('reserved', 0)),
+        safe_float(data.get('in_transit', 0)),
+        safe_float(data.get('price', 0)),
+        safe_float(data.get('total_sum', 0)),
+        data.get('last_income_date'),
+        data.get('last_move_date'),
+        data.get('description'),
+        material_id
+    ))
+
+    conn.commit()
+    conn.close()
+

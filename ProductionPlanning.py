@@ -392,8 +392,8 @@ class ProductionPlanningTab(CTkFrame):
                                            columns=("type", "amount", "dimension"),
                                            show="headings")
         self.warehouse_tree.heading("type", text="Материал")
-        self.warehouse_tree.heading("amount", text="Общее количество")
-        self.warehouse_tree.heading("dimension", text="Ед. изм.")
+        self.warehouse_tree.heading("amount", text="Используется")
+        self.warehouse_tree.heading("dimension", text="На складе")
 
         self.warehouse_tree.column("type", width=250)
         self.warehouse_tree.column("amount", width=150, anchor='center')
@@ -894,6 +894,16 @@ class ProductionPlanningTab(CTkFrame):
         for item in self.warehouse_tree.get_children():
             self.warehouse_tree.delete(item)
 
+        # Обновляем структуру таблицы
+        self.warehouse_tree['columns'] = ("type", "used", "in_stock")
+        self.warehouse_tree.heading("type", text="Материал")
+        self.warehouse_tree.heading("used", text="Используется")
+        self.warehouse_tree.heading("in_stock", text="На складе")
+
+        self.warehouse_tree.column("type", width=250)
+        self.warehouse_tree.column("used", width=150, anchor='center')
+        self.warehouse_tree.column("in_stock", width=100, anchor='center')
+
         # Получаем все заказы
         orders = get_production_orders()
 
@@ -923,10 +933,13 @@ class ProductionPlanningTab(CTkFrame):
 
         # Добавляем данные в таблицу
         for mat_type, data in sorted_materials:
+            # Форматируем значение с единицей измерения
+            used_value = f"{round(data['amount'], 2)} {data['dimension']}"
+
             self.warehouse_tree.insert("", tk.END,
                                        values=(mat_type,
-                                               round(data['amount'], 2),
-                                               data['dimension']))
+                                               used_value,
+                                               "N/A"))
 
     def load_materials_for_order(self, order_id):
         """Загрузка списка материалов для заказа с нумерацией"""
