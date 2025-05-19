@@ -6,6 +6,7 @@ from tkinter import ttk
 from typing import Dict, List, Tuple
 
 from functools import lru_cache
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import itertools
 from collections import defaultdict
@@ -472,7 +473,7 @@ class GlassCuttingTab(CTkFrame):
                     self.order_listbox.insert(tk.END, order_text)
 
     def optimize_cutting(self):
-        """Строгий алгоритм раскроя с гарантией заполнения карт перед созданием новых"""
+        """Многопоточная оптимизация раскроя с безопасным кэшированием"""
         try:
             self.sheet_width = int(self.entry_sheet_width.get())
             self.sheet_height = int(self.entry_sheet_height.get())
@@ -480,126 +481,191 @@ class GlassCuttingTab(CTkFrame):
             messagebox.showerror("Ошибка", "Неверные размеры листа стекла")
             return
 
-        # Получаем заказы из базы данных
         orders = self._fetch_orders()
         if not orders:
             messagebox.showwarning("Предупреждение", "Нет заказов для оптимизации.")
             return
 
-        # Группируем по типу стеклопакета
+        # Инициализация структур данных
+        self.groups = []
+        self.unused_elements = defaultdict(list)
+        self.packing_cache = {}
+        self.lock = threading.Lock()
+        sheet_area = self.sheet_width * self.sheet_height
+        min_fill_ratio = 0.85
+
+        # Группировка по типам стекла
         type_groups = defaultdict(list)
         for order in orders:
             type_groups[order['type']].append(order)
 
-        self.groups = []
-        sheet_area = self.sheet_width * self.sheet_height
-        min_fill_ratio = 0.90  # Жесткий порог заполнения
-        unused_elements = defaultdict(list)
+        # Функция для обработки одного типа стекла
+        def process_type(window_type, type_orders):
+            try:
+                items = [{
+                    'id': f"{o['order_id']}-{o['window_id']}",
+                    'width': o['width'],
+                    'height': o['height'],
+                    'type': o['type'],
+                    'original': o
+                } for o in type_orders]
 
-        print("\n" + "=" * 50)
-        print(f"НАЧАЛО ОПТИМИЗАЦИИ РАСКРОЯ")
-        print("=" * 50 + "\n")
+                # Сортировка по убыванию площади
+                items.sort(key=lambda x: x['width'] * x['height'], reverse=True)
+                remaining_items = items.copy()
 
-        for window_type, type_orders in type_groups.items():
-            print(f"\nОбработка типа: {window_type}")
+                while remaining_items:
+                    # Создаем новую карту раскроя
+                    current_sheet = {
+                        'items': [],
+                        'used_area': 0,
+                        'type': window_type
+                    }
 
-            # Создаем элементы с уникальными ID
-            items = [{
-                'id': f"{o['order_id']}-{o['window_id']}",
-                'width': o['width'],
-                'height': o['height'],
-                'type': o['type'],
-                'original': o,
-                'used': False
-            } for o in type_orders]
+                    # Заполняем текущую карту
+                    while current_sheet['used_area'] / sheet_area < min_fill_ratio and remaining_items:
+                        best_item = None
+                        best_fill = current_sheet['used_area'] / sheet_area
 
-            # Сортируем по убыванию площади
-            items.sort(key=lambda x: x['width'] * x['height'], reverse=True)
-            remaining_items = items.copy()
+                        # Поиск лучшего элемента для добавления
+                        for i, item in enumerate(remaining_items):
+                            test_items = current_sheet['items'] + [item]
+                            cache_key = self._create_cache_key(test_items)
 
-            # Создаем карты для этого типа
-            while remaining_items:
-                current_sheet_items = []
-                current_fill = 0
+                            if cache_key in self.packing_cache:
+                                packed, used_area = self.packing_cache[cache_key]
+                            else:
+                                packed, used_area = self._pack_items_safe(test_items)
+                                with self.lock:
+                                    self.packing_cache[cache_key] = (packed, used_area)
 
-                # Основной цикл заполнения текущей карты
-                while current_fill < min_fill_ratio and remaining_items:
-                    best_item = None
-                    best_fill = current_fill
+                            if used_area / sheet_area > best_fill and len(packed) == len(test_items):
+                                best_fill = used_area / sheet_area
+                                best_item = item
+                                best_packed = packed
+                                best_used_area = used_area
 
-                    # Ищем элемент, который максимально увеличит заполнение
-                    for i, item in enumerate(remaining_items):
-                        if item['used']:
-                            continue
+                                if best_fill >= min_fill_ratio:
+                                    break
 
-                        # Пробуем добавить элемент к текущей карте
-                        test_items = current_sheet_items + [item]
-                        packed, used_area = self.pack_items(test_items)
-                        test_fill = used_area / sheet_area
+                        if best_item:
+                            current_sheet['items'] = best_packed
+                            current_sheet['used_area'] = best_used_area
+                            remaining_items.remove(best_item)
+                        else:
+                            break
 
-                        # Если нашли лучшее заполнение
-                        if test_fill > best_fill and len(packed) == len(test_items):
-                            best_fill = test_fill
-                            best_item = item
-                            best_packed = packed
+                    # Если карта содержит элементы, сохраняем ее
+                    if current_sheet['items']:
+                        with self.lock:
+                            self._add_completed_sheet(current_sheet, window_type, sheet_area)
 
-                            # Если достигли минимального заполнения - останавливаем поиск
-                            if best_fill >= min_fill_ratio:
-                                break
+                        # Пытаемся добавить дополнительные элементы
+                        self._try_add_remaining_items(current_sheet, remaining_items, window_type, sheet_area)
 
-                    # Если нашли подходящий элемент
-                    if best_item:
-                        current_sheet_items.append(best_item)
-                        best_item['used'] = True
-                        current_fill = best_fill
-                        remaining_items.remove(best_item)
-                        print(
-                            f"Добавлен элемент {best_item['id']} ({best_item['width']}x{best_item['height']}). Заполнение: {current_fill * 100:.1f}%")
-                    else:
-                        break  # Не смогли найти элемент для добавления
+                # Сохраняем неиспользованные элементы
+                with self.lock:
+                    self.unused_elements[window_type] = remaining_items
 
-                # Если карта достигла минимального заполнения или больше не дополняется
-                if current_sheet_items:
-                    packed, used_area = self.pack_items(current_sheet_items)
-                    self._print_sheet_summary(len(self.groups), packed, used_area, sheet_area)
-                    self._add_cutting_map(packed, used_area, window_type)
+            except Exception as e:
+                print(f"Ошибка при обработке типа {window_type}: {e}")
 
-                    # Пытаемся добавить оставшиеся элементы в эту карту
-                    temp_remaining = remaining_items.copy()
-                    for item in temp_remaining:
-                        test_items = current_sheet_items + [item]
-                        packed, used_area = self.pack_items(test_items)
+        # Запуск обработки в пуле потоков
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(process_type, wt, to) for wt, to in type_groups.items()]
+            for future in as_completed(futures):
+                future.result()  # Ожидаем завершения и обрабатываем исключения
 
-                        if len(packed) == len(test_items) and used_area / sheet_area <= 1.0:
-                            current_sheet_items.append(item)
-                            item['used'] = True
-                            remaining_items.remove(item)
-                            print(f"Дополнительно добавлен элемент {item['id']}")
-
-                    # Обновляем карту с дополнительными элементами
-                    if len(current_sheet_items) > len(packed):
-                        packed, used_area = self.pack_items(current_sheet_items)
-                        self.groups[-1]['items'] = packed
-                        self.groups[-1]['used_area'] = used_area
-                        self.groups[-1]['wasted_area'] = sheet_area - used_area
-                        self.groups[-1]['fill_percentage'] = (used_area / sheet_area) * 100
-                else:
-                    break  # Не смогли создать ни одной карты
-
-            # Записываем неиспользованные элементы
-            unused_elements[window_type] = [item for item in items if not item['used']]
-
-        # Выводим статистику
-        self._print_unused_elements(unused_elements)
-        self._mark_unused_orders(unused_elements)
-
-        print("\n" + "=" * 50)
-        print(f"ОПТИМИЗАЦИЯ ЗАВЕРШЕНА. Карт раскроя: {len(self.groups)}")
-        print("=" * 50)
-
+        self._print_final_statistics()
         self.update_interface()
         self.select_default_card()
         self.load_orders_from_db()
+
+    def _create_cache_key(self, items):
+        """Создает безопасный ключ для кэша"""
+        sizes = tuple(sorted((item['width'], item['height']) for item in items))
+        return hash(sizes)
+
+    def _pack_items_safe(self, items):
+        """Безопасная упаковка элементов с обработкой ошибок"""
+        try:
+            return self.pack_items(items)
+        except Exception as e:
+            print(f"Ошибка упаковки: {e}")
+            return [], 0
+
+    def _add_completed_sheet(self, sheet, window_type, sheet_area):
+        """Добавляет завершенную карту в общий список"""
+        self.groups.append({
+            'width': self.sheet_width,
+            'height': self.sheet_height,
+            'items': sheet['items'],
+            'type': window_type,
+            'used_area': sheet['used_area'],
+            'wasted_area': sheet_area - sheet['used_area'],
+            'fill_percentage': (sheet['used_area'] / sheet_area) * 100
+        })
+        print(
+            f"[{window_type}] Добавлена карта {len(self.groups)}. Заполнение: {self.groups[-1]['fill_percentage']:.1f}%")
+
+    def _try_add_remaining_items(self, sheet, remaining_items, window_type, sheet_area):
+        """Пытается добавить оставшиеся элементы в карту"""
+        added_count = 0
+        temp_remaining = remaining_items.copy()
+
+        for item in temp_remaining:
+            test_items = sheet['items'] + [item]
+            cache_key = self._create_cache_key(test_items)
+
+            if cache_key in self.packing_cache:
+                packed, used_area = self.packing_cache[cache_key]
+            else:
+                packed, used_area = self._pack_items_safe(test_items)
+                with self.lock:
+                    self.packing_cache[cache_key] = (packed, used_area)
+
+            if len(packed) == len(test_items) and used_area <= sheet_area:
+                sheet['items'] = packed
+                sheet['used_area'] = used_area
+                remaining_items.remove(item)
+                added_count += 1
+                print(f"[{window_type}] Добавлен дополнительный элемент {item['id']}")
+
+        if added_count > 0:
+            with self.lock:
+                self.groups[-1].update({
+                    'items': sheet['items'],
+                    'used_area': sheet['used_area'],
+                    'wasted_area': sheet_area - sheet['used_area'],
+                    'fill_percentage': (sheet['used_area'] / sheet_area) * 100
+                })
+
+    def _print_final_statistics(self):
+        """Выводит итоговую статистику после оптимизации"""
+        print("\n" + "=" * 50)
+        print("ИТОГОВАЯ СТАТИСТИКА")
+        print("=" * 50)
+
+        total_sheets = len(self.groups)
+        total_used_area = sum(g['used_area'] for g in self.groups)
+        total_wasted_area = sum(g['wasted_area'] for g in self.groups)
+        try:
+            avg_fill = (total_used_area / (total_sheets * self.sheet_width * self.sheet_height)) * 100
+        except ZeroDivisionError:
+            avg_fill = 0
+
+        print(f"\nВсего карт раскроя: {total_sheets}")
+        print(f"Среднее заполнение: {avg_fill:.1f}%")
+        print(f"Общая использованная площадь: {total_used_area / 1e6:.2f} м²")
+        print(f"Общие отходы: {total_wasted_area / 1e6:.2f} м²")
+
+        for window_type, items in self.unused_elements.items():
+            if items:
+                print(f"\nНе упаковано элементов типа {window_type}: {len(items)}")
+                for item in items[:3]:
+                    print(f" - {item['id']}: {item['width']}x{item['height']} мм")
+                if len(items) > 3:
+                    print(f" - ...и еще {len(items) - 3} элементов")
 
     def _print_unused_elements(self, unused_elements):
         """Выводит информацию о неиспользованных элементах"""
