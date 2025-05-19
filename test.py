@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
 from tkinter import messagebox
@@ -9,7 +9,7 @@ from GroupSolver import GroupSolver
 from ProductionPlanning import ProductionPlanningTab
 from Users import check_credentials
 from database import (create_database, add_order_to_db, delete_order_from_db, update_order_in_db,
-                     get_all_orders_from_db)
+                      get_all_orders_from_db, get_windows_for_production_order, get_production_orders)
 
 class AuthWindow(CTk):
     def __init__(self, parent):
@@ -298,7 +298,6 @@ class FrameCuttingTab(CTkFrame):
 class GlassCuttingTab(CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
-        self.cutting_margin = 5  # Технологический зазор между деталями (мм)
         self.min_rotation_angle = 90  # Минимальный шаг поворота
         self.parent = parent
         self.groups = []
@@ -311,11 +310,17 @@ class GlassCuttingTab(CTkFrame):
         self.selection_rect = None
         self.hover_rect = None
         self.tooltip = None
-
+        self.side_panels_width = 200  # Начальная ширина боковых панелей
 
         # Левый фрейм для работы с заказами
-        self.left_frame = CTkFrame(self, width=200)
+        self.left_frame = CTkFrame(self, width=self.side_panels_width)
         self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10, expand=False)
+
+        # Разделитель для левой панели
+        self.left_separator = ttk.Separator(self, orient="vertical")
+        self.left_separator.pack(side=tk.LEFT, fill="y", padx=2)
+        self.left_separator.bind("<B1-Motion>", self.resize_left_panel)
+        self.left_separator.bind("<Button-3>", self.show_panel_context_menu)
 
         # Добавляем поля для ввода размеров листа стекла
         self.label_sheet_width = CTkLabel(self.left_frame, text="Ширина листа стекла (мм):")
@@ -330,51 +335,15 @@ class GlassCuttingTab(CTkFrame):
         self.entry_sheet_height.insert(0, "6000")
         self.entry_sheet_height.pack(pady=5)
 
-        self.label_width = CTkLabel(self.left_frame, text="Ширина стеклопакета (мм):")
-        self.label_width.pack(pady=5)
-        self.entry_width = CTkEntry(self.left_frame, width=100)
-        self.entry_width.pack(pady=5)
-
-        self.label_height = CTkLabel(self.left_frame, text="Высота стеклопакета (мм):")
-        self.label_height.pack(pady=5)
-        self.entry_height = CTkEntry(self.left_frame, width=100)
-        self.entry_height.pack(pady=5)
-
-        self.label_type = CTkLabel(self.left_frame, text="Тип стеклопакета:")
-        self.label_type.pack(pady=5)
-
-        self.package_type = tk.StringVar(value="Однокамерный")
-
-        self.radio_single = CTkRadioButton(self.left_frame, text="Однокамерный", variable=self.package_type,
-                                       value="Однокамерный")
-        self.radio_single.pack(anchor='w', padx=10)
-        self.radio_double = CTkRadioButton(self.left_frame, text="Двухкамерный", variable=self.package_type,
-                                       value="Двухкамерный")
-        self.radio_double.pack(anchor='w', padx=10)
-
-        self.add_order_button = CTkButton(self.left_frame, text="Добавить заказ", command=self.add_order)
-        self.add_order_button.pack(pady=10)
-
-        self.delete_order_button = CTkButton(self.left_frame, text="Удалить заказ", command=self.delete_order)
-        self.delete_order_button.pack(pady=10)
-
-        self.update_order_button = CTkButton(self.left_frame, text="Изменить заказ", command=self.update_order)
-        self.update_order_button.pack(pady=10)
-
-        self.order_list_frame = CTkFrame(self.left_frame)
-        self.order_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-
-        self.scrollbar = CTkScrollbar(self.order_list_frame)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.order_listbox = tk.Listbox(self.order_list_frame, yscrollcommand=self.scrollbar.set, height=15,
-                                    bg="#333333", fg="white", font=("Arial", 12))
-        self.order_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.configure(command=self.order_listbox.yview)
-
         # Правый фрейм для результатов
-        self.right_frame = CTkFrame(self, width=200)
+        self.right_frame = CTkFrame(self, width=self.side_panels_width)
         self.right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10, expand=False)
+
+        # Разделитель для правой панели
+        self.right_separator = ttk.Separator(self, orient="vertical")
+        self.right_separator.pack(side=tk.RIGHT, fill="y", padx=2)
+        self.right_separator.bind("<B1-Motion>", self.resize_right_panel)
+        self.right_separator.bind("<Button-3>", self.show_panel_context_menu)
 
         self.card_list_frame = CTkFrame(self.right_frame)
         self.card_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -412,6 +381,19 @@ class GlassCuttingTab(CTkFrame):
         # Метка для неиспользованной области (как было)
         self.unused_label = CTkLabel(self.center_frame, text="")
         self.unused_label.pack(anchor='w', padx=10, pady=5)
+
+        # Список заказов (стеклопакетов)
+        self.order_list_frame = CTkFrame(self.left_frame)
+        self.order_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        self.scrollbar = CTkScrollbar(self.order_list_frame)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.order_listbox = tk.Listbox(self.order_list_frame, yscrollcommand=self.scrollbar.set, height=15,
+                                        bg="#333333", fg="white", font=("Arial", 12))
+        self.order_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.configure(command=self.order_listbox.yview)
+
         # Привязка событий для нового функционала
         self.card_canvas.bind("<Motion>", self.on_canvas_hover)
         self.card_canvas.bind("<Button-1>", self.on_canvas_click)
@@ -422,6 +404,120 @@ class GlassCuttingTab(CTkFrame):
         self.select_default_card()
 
         self.load_orders_from_db()
+
+    def resize_left_panel(self, event):
+        """Изменяет ширину левой панели"""
+        new_width = event.x_root - self.left_frame.winfo_rootx()
+        if 150 <= new_width <= 400:  # Ограничиваем минимальную и максимальную ширину
+            self.side_panels_width = new_width
+            self.left_frame.configure(width=new_width)
+            self.left_frame.pack_configure(padx=10 if new_width > 160 else 5)
+
+    def resize_right_panel(self, event):
+        """Изменяет ширину правой панели"""
+        new_width = self.right_frame.winfo_rootx() + self.right_frame.winfo_width() - event.x_root
+        if 150 <= new_width <= 400:  # Ограничиваем минимальную и максимальную ширину
+            self.side_panels_width = new_width
+            self.right_frame.configure(width=new_width)
+            self.right_frame.pack_configure(padx=10 if new_width > 160 else 5)
+
+    def show_panel_context_menu(self, event):
+        """Показывает контекстное меню для управления панелями"""
+        # Определяем, какая панель была кликнута
+        if event.widget == self.left_separator:
+            panel = "left"
+        elif event.widget == self.right_separator:
+            panel = "right"
+        else:
+            return
+
+        # Создаем меню
+        menu = tk.Menu(self, tearoff=0)
+
+        # Добавляем команды
+        menu.add_command(
+            label="Увеличить ширину",
+            command=lambda: self.adjust_panel_width(panel, "increase")
+        )
+        menu.add_command(
+            label="Уменьшить ширину",
+            command=lambda: self.adjust_panel_width(panel, "decrease")
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Сбросить ширину",
+            command=lambda: self.reset_panel_width(panel)
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Открыть в отдельном окне",
+            command=lambda: self.open_panel_in_window(panel)
+        )
+
+        # Показываем меню
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def adjust_panel_width(self, panel, action):
+        """Регулирует ширину панели"""
+        step = 20  # Шаг изменения
+        current_width = self.side_panels_width
+
+        if action == "increase" and current_width < 400:
+            new_width = current_width + step
+        elif action == "decrease" and current_width > 150:
+            new_width = current_width - step
+        else:
+            return
+
+        self.side_panels_width = new_width
+
+        if panel == "left":
+            self.left_frame.configure(width=new_width)
+        else:
+            self.right_frame.configure(width=new_width)
+
+    def reset_panel_width(self, panel):
+        """Сбрасывает ширину панели к значению по умолчанию"""
+        self.side_panels_width = 200
+        if panel == "left":
+            self.left_frame.configure(width=200)
+        else:
+            self.right_frame.configure(width=200)
+
+    def open_panel_in_window(self, panel):
+        """Открывает панель в отдельном окне"""
+        if panel == "left":
+            content = self.left_frame
+            title = "Список заказов"
+        else:
+            content = self.right_frame
+            title = "Карты раскроя"
+
+        # Создаем новое окно
+        new_window = tk.Toplevel(self)
+        new_window.title(title)
+        new_window.geometry(f"{self.side_panels_width}x600")
+
+        # Перемещаем содержимое в новое окно
+        content.pack_forget()
+        content.pack(in_=new_window, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Настраиваем закрытие окна
+        def on_close():
+            content.pack_forget()
+            if panel == "left":
+                content.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10, expand=False)
+            else:
+                content.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10, expand=False)
+            new_window.destroy()
+
+        new_window.protocol("WM_DELETE_WINDOW", on_close)
+
+        # Делаем окно изменяемым по размеру
+        new_window.resizable(True, True)
 
     def select_default_card(self):
         """Выбирает первую карту раскроя по умолчанию"""
@@ -633,74 +729,26 @@ class GlassCuttingTab(CTkFrame):
             self.card_canvas.winfo_height() / group['height']
         )
 
-    def add_order(self):
-        width = self.entry_width.get()
-        height = self.entry_height.get()
-        if width and height:
-            try:
-                width = int(width)
-                height = int(height)
-                if width <= 0 or height <= 0:
-                    messagebox.showerror("Ошибка", "Ширина и высота должны быть положительными числами.")
-                    return
-
-                add_order_to_db(width, height, self.package_type.get())
-                self.load_orders_from_db()
-                self.parent.on_orders_updated()
-
-            except ValueError:
-                messagebox.showerror("Ошибка", "Неверный ввод. Пожалуйста, введите целые числа.")
-
-    def delete_order(self):
-        selected_order_index = self.order_listbox.curselection()
-        if selected_order_index:
-            orders = get_all_orders_from_db()
-            order_id = orders[selected_order_index[0]][0]
-
-            delete_order_from_db(order_id)
-            self.load_orders_from_db()
-            self.parent.on_orders_updated()
-        else:
-            messagebox.showwarning("Предупреждение", "Пожалуйста, выберите заказ для удаления.")
-
-    def update_order(self):
-        selected_order_index = self.order_listbox.curselection()
-        if selected_order_index:
-            orders = get_all_orders_from_db()
-            order_id = orders[selected_order_index[0]][0]
-
-            new_width = self.entry_width.get()
-            new_height = self.entry_height.get()
-
-            if new_width and new_height:
-                try:
-                    new_width = int(new_width)
-                    new_height = int(new_height)
-
-                    update_order_in_db(order_id, new_width, new_height)
-                    self.load_orders_from_db()
-                    self.parent.on_orders_updated()
-
-                    self.entry_width.delete(0, tk.END)
-                    self.entry_height.delete(0, tk.END)
-
-                except ValueError:
-                    messagebox.showerror("Ошибка", "Неверный ввод. Пожалуйста, введите целые числа.")
-            else:
-                messagebox.showwarning("Предупреждение", "Пожалуйста, введите новые значения.")
-        else:
-            messagebox.showwarning("Предупреждение", "Пожалуйста, выберите заказ для изменения.")
-
     def load_orders_from_db(self):
-        orders = get_all_orders_from_db()
+        """Загружает стеклопакеты из production orders с сохранением типа"""
         self.order_listbox.delete(0, tk.END)
+        orders = get_production_orders()
+        if not orders:
+            return
+
         for order in orders:
-            order_id, width, height, package_type = order
-            order_text = f"Заказ {order_id}: {width}x{height} ({package_type})"
-            self.order_listbox.insert(tk.END, order_text)
+            order_id = order[0]
+            windows = get_windows_for_production_order(order_id)
+
+            for window in windows:
+                window_id, window_type, width, height, quantity = window
+                for _ in range(quantity):
+                    # Сохраняем тип в тексте заказа
+                    order_text = f"Заказ {order_id}: {width}x{height} ({window_type})"
+                    self.order_listbox.insert(tk.END, order_text)
 
     def optimize_cutting(self):
-        """Усовершенствованный алгоритм оптимизации раскроя с поворотами"""
+        """Усовершенствованный алгоритм оптимизации раскроя с поворотами и группировкой по типу"""
         try:
             self.sheet_width = int(self.entry_sheet_width.get())
             self.sheet_height = int(self.entry_sheet_height.get())
@@ -708,37 +756,66 @@ class GlassCuttingTab(CTkFrame):
             messagebox.showerror("Ошибка", "Неверные размеры листа стекла")
             return
 
-        orders = get_all_orders_from_db()
+        # Получаем заказы из базы данных (как в load_orders_from_db)
+        orders = []
+        production_orders = get_production_orders()
+        if not production_orders:
+            messagebox.showwarning("Предупреждение", "Нет заказов для оптимизации.")
+            return
+
+        for order in production_orders:
+            order_id = order[0]
+            windows = get_windows_for_production_order(order_id)
+            for window in windows:
+                window_id, window_type, width, height, quantity = window
+                for _ in range(quantity):
+                    orders.append({
+                        'order_id': order_id,  # Исправлено с 'id' на 'order_id'
+                        'window_id': window_id,
+                        'width': width,
+                        'height': height,
+                        'type': window_type
+                    })
+
         if not orders:
             messagebox.showwarning("Предупреждение", "Нет заказов для оптимизации.")
             return
 
-        # Подготовка данных
-        items = [{'id': o[0], 'width': o[1], 'height': o[2]} for o in orders]
+        # Группируем заказы по типу
+        type_groups = {}
+        for order in orders:
+            if order['type'] not in type_groups:
+                type_groups[order['type']] = []
+            type_groups[order['type']].append(order)
 
-        # Алгоритм Best-Fit Decreasing с поворотами
-        self.groups = self.best_fit_decreasing_algorithm(items)
+
+        # Оптимизируем для каждой группы отдельно
+        self.groups = []
+        for window_type, type_orders in type_groups.items():
+            # Подготовка данных для алгоритма
+            items = [{'id': f"{o['order_id']}-{o['window_id']}",
+                      'width': o['width'],
+                      'height': o['height'],
+                      'type': o['type']}
+                     for o in type_orders]
+
+            # Применяем алгоритм Best-Fit Decreasing для каждой группы
+            type_sheets = self.best_fit_decreasing_algorithm(items)
+
+            # Добавляем информацию о типе в результаты
+            for sheet in type_sheets:
+                sheet['type'] = window_type
+                self.groups.append(sheet)
 
         # Обновляем интерфейс
         self.update_interface()
-
         self.select_default_card()  # Автовыбор первой карты
 
-    def update_interface(self):
-        """Обновляет все элементы интерфейса после оптимизации"""
-        self.card_listbox.delete(0, tk.END)
-
-        for i, group in enumerate(self.groups):
-            used_area = sum(i['width'] * i['height'] for i in group['items'])
-            total_area = group['width'] * group['height']
-            utilization = used_area / total_area * 100
-            self.card_listbox.insert(tk.END, f"Карта {i + 1} (Использовано: {utilization:.1f}%)")
-
-        if self.groups:
-            self.display_cutting_plan(0)
+        # Также обновляем список заказов в интерфейсе
+        self.load_orders_from_db()
 
     def best_fit_decreasing_algorithm(self, items: List[Dict]) -> List[Dict]:
-        """Алгоритм Best-Fit Decreasing с поддержкой поворотов"""
+        """Улучшенный алгоритм Best-Fit Decreasing с минимальным свободным пространством"""
         # Сортируем элементы по убыванию площади
         sorted_items = sorted(items, key=lambda x: x['width'] * x['height'], reverse=True)
 
@@ -746,43 +823,50 @@ class GlassCuttingTab(CTkFrame):
 
         for item in sorted_items:
             placed = False
+            best_sheet = None
+            best_rotation = None
+            best_rect = None
+            min_waste = float('inf')
 
-            # Пробуем разместить на существующих листах
+            # Ищем лучший лист для размещения
             for sheet in sheets:
-                result = self.try_place_item(sheet, item)
-                if result:
+                result, rotation, rect, waste = self.find_best_placement(sheet, item)
+                if result and waste < min_waste:
+                    min_waste = waste
+                    best_sheet = sheet
+                    best_rotation = rotation
+                    best_rect = rect
                     placed = True
-                    break
 
-            # Если не поместилось, создаем новый лист
-            if not placed:
+            # Если нашли подходящий лист
+            if placed:
+                self.place_item(best_sheet, item, best_rotation, best_rect)
+            else:
+                # Создаем новый лист
                 new_sheet = {
                     'width': self.sheet_width,
                     'height': self.sheet_height,
                     'items': [],
                     'remaining_rectangles': [(0, 0, self.sheet_width, self.sheet_height)]
                 }
-                self.try_place_item(new_sheet, item)
+                self.place_item(new_sheet, item, 0, new_sheet['remaining_rectangles'][0])
                 sheets.append(new_sheet)
 
         return sheets
 
-    def try_place_item(self, sheet: Dict, item: Dict) -> bool:
-        """Пытается разместить элемент на листе с оптимальным поворотом"""
+    def find_best_placement(self, sheet: Dict, item: Dict) -> Tuple[bool, Optional[int], Optional[Tuple], float]:
+        """Находит лучшее место для размещения элемента на листе"""
         best_rotation = None
-        best_fit = None
         best_rect = None
         min_waste = float('inf')
 
         # Проверяем все возможные повороты (0, 90 градусов)
         for rotation in [0, 90]:
-            if rotation == 0:
-                w, h = item['width'], item['height']
-            else:
-                w, h = item['height'], item['width']
+            w = item['width'] if rotation == 0 else item['height']
+            h = item['height'] if rotation == 0 else item['width']
 
             # Ищем лучшее место для размещения
-            for rect in sheet['remaining_rectangles']:
+            for i, rect in enumerate(sheet['remaining_rectangles']):
                 rx, ry, rw, rh = rect
 
                 # Проверяем, помещается ли элемент
@@ -794,45 +878,71 @@ class GlassCuttingTab(CTkFrame):
                     if waste < min_waste:
                         min_waste = waste
                         best_rotation = rotation
-                        best_fit = (w, h)
                         best_rect = rect
+                        best_rect_index = i
 
-        # Если нашли подходящее место
-        if best_rect:
-            rx, ry, rw, rh = best_rect
-            w, h = best_fit
+        return best_rect is not None, best_rotation, best_rect, min_waste
 
-            # Добавляем элемент
-            sheet['items'].append({
-                'id': item['id'],
-                'x': rx,
-                'y': ry,
-                'width': w,
-                'height': h,
-                'rotation': best_rotation
-            })
-
-            # Обновляем оставшееся пространство (алгоритм Guillotine)
-            self.update_remaining_space(sheet, best_rect, w, h)
-            return True
-
-        return False
-
-    def update_remaining_space(self, sheet: Dict, rect: Tuple, w: int, h: int):
-        """Обновляет оставшееся пространство по алгоритму Guillotine"""
+    def place_item(self, sheet: Dict, item: Dict, rotation: int, rect: Tuple):
+        """Размещает элемент на листе и обновляет оставшееся пространство"""
         rx, ry, rw, rh = rect
+        w = item['width'] if rotation == 0 else item['height']
+        h = item['height'] if rotation == 0 else item['width']
+
+        # Добавляем элемент
+        sheet['items'].append({
+            'id': item['id'],
+            'x': rx,
+            'y': ry,
+            'width': w,
+            'height': h,
+            'rotation': rotation,
+            'type': item.get('type', 'Неизвестный тип')
+        })
+
+        # Удаляем использованный прямоугольник
         sheet['remaining_rectangles'].remove(rect)
 
-        # Оставшееся пространство справа
+        # Добавляем новые прямоугольники из оставшегося пространства
+        remaining_spaces = []
+
+        # 1. Оставшееся пространство справа (если есть)
         if rw - w > 0:
-            sheet['remaining_rectangles'].append((rx + w, ry, rw - w, h))
+            remaining_spaces.append((rx + w, ry, rw - w, h))
 
-        # Оставшееся пространство сверху
+        # 2. Оставшееся пространство сверху (если есть)
         if rh - h > 0:
-            sheet['remaining_rectangles'].append((rx, ry + h, w, rh - h))
+            remaining_spaces.append((rx, ry + h, w, rh - h))
 
-        # Сортировка оставшихся прямоугольников по площади
+        # 3. Оставшееся пространство в углу (если есть)
+        if rw - w > 0 and rh - h > 0:
+            remaining_spaces.append((rx + w, ry + h, rw - w, rh - h))
+
+        # Фильтруем слишком маленькие пространства (меньше минимального размера)
+        min_size = 50  # Минимальный размер пространства, которое стоит учитывать
+        remaining_spaces = [
+            space for space in remaining_spaces
+            if space[2] >= min_size and space[3] >= min_size
+        ]
+
+        # Добавляем оставшиеся пространства и сортируем по площади
+        sheet['remaining_rectangles'].extend(remaining_spaces)
         sheet['remaining_rectangles'].sort(key=lambda r: r[2] * r[3], reverse=True)
+
+    def update_interface(self):
+        """Обновляет все элементы интерфейса после оптимизации"""
+        self.card_listbox.delete(0, tk.END)
+
+        for i, group in enumerate(self.groups):
+            used_area = sum(i['width'] * i['height'] for i in group['items'])
+            total_area = group['width'] * group['height']
+            utilization = used_area / total_area * 100
+            group_type = group.get('type', 'Неизвестный тип')
+            self.card_listbox.insert(tk.END, f"Карта {i + 1} ({group_type}): {utilization:.1f}%")
+
+        if self.groups:
+            self.display_cutting_plan(0)
+
 
     def display_cutting_plan(self, index):
         """Отображение карты раскроя с сеткой и неиспользованными областями"""

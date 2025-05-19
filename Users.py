@@ -1,6 +1,6 @@
 users = {
         "admin": "admin",
-        "user1": "1234",
+        "": "",
         "user": "password"
     }
 
