@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import itertools
 from collections import defaultdict
 
-from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar
+from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkProgressBar, CTkComboBox
 from tkinter import messagebox
 
 from database import (get_windows_for_production_order, get_production_orders)
@@ -20,12 +20,16 @@ from database import (get_windows_for_production_order, get_production_orders)
 class GlassCuttingTab(CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
-        self.min_rotation_angle = 90  # Минимальный шаг поворота
+        self.min_rotation_angle = 90
         self.parent = parent
         self.groups = []
-        self.sheet_width = 6000  # Ширина листа стекла по умолчанию
-        self.sheet_height = 6000  # Высота листа стекла по умолчанию
+        self.sheet_width = 6000
+        self.sheet_height = 6000
         self.zoom_level = 0.8
+        self.optimization_mode = "normal"  # "normal" или "deep"
+        self._is_running = True
+        self._gui_update_queue = []
+        self.after(100, self._process_gui_updates)  # Запускаем обработчик обновлений GUI
 
         self.packing_cache = {}
         self.combination_cache = {}
@@ -35,7 +39,7 @@ class GlassCuttingTab(CTkFrame):
         self.selection_rect = None
         self.hover_rect = None
         self.tooltip = None
-        self.side_panels_width = 200  # Начальная ширина боковых панелей
+        self.side_panels_width = 200
 
         # Левый фрейм для работы с заказами
         self.left_frame = CTkFrame(self, width=self.side_panels_width)
@@ -84,16 +88,39 @@ class GlassCuttingTab(CTkFrame):
         self.center_frame = CTkFrame(self)
         self.center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Кнопка оптимизации сверху
+        # Создаем фрейм для элементов управления оптимизацией
+        self.optimization_control_frame = CTkFrame(self.center_frame)
+        self.optimization_control_frame.pack(pady=5, anchor='n', fill=tk.X)
+
+        # Кнопка оптимизации
         self.optimize_button = CTkButton(
-            self.center_frame,
+            self.optimization_control_frame,
             text="Запустить оптимизацию",
             command=self.optimize_cutting,
             width=200
         )
-        self.optimize_button.pack(pady=5, anchor='n')
+        self.optimize_button.pack(side=tk.LEFT, padx=(0, 10))
 
-        # Холст для отображения (как было раньше)
+        # Выбор режима оптимизации
+        self.optimization_combobox = CTkComboBox(
+            self.optimization_control_frame,
+            values=["Быстрый (по умолчанию)", "Глубокий перебор"],
+            command=self.set_optimization_mode,
+            width=180
+        )
+        self.optimization_combobox.pack(side=tk.LEFT)
+        self.optimization_combobox.set("Быстрый (по умолчанию)")
+
+        # Прогресс-бар и статус
+        self.progress_bar = CTkProgressBar(self.center_frame, mode='determinate')
+        self.progress_bar.pack(pady=5, fill=tk.X, padx=20)
+        self.progress_bar.pack_forget()
+
+        self.status_label = CTkLabel(self.center_frame, text="")
+        self.status_label.pack(pady=5)
+        self.status_label.pack_forget()
+
+        # Холст для отображения
         self.card_canvas = tk.Canvas(
             self.center_frame,
             width=600,
@@ -103,7 +130,7 @@ class GlassCuttingTab(CTkFrame):
         )
         self.card_canvas.pack(pady=10, fill=tk.BOTH, expand=True)
 
-        # Метка для неиспользованной области (как было)
+        # Метка для неиспользованной области
         self.unused_label = CTkLabel(self.center_frame, text="")
         self.unused_label.pack(anchor='w', padx=10, pady=5)
 
@@ -119,16 +146,47 @@ class GlassCuttingTab(CTkFrame):
         self.order_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.scrollbar.configure(command=self.order_listbox.yview)
 
-        # Привязка событий для нового функционала
+        # Привязка событий
         self.card_canvas.bind("<Motion>", self.on_canvas_hover)
         self.card_canvas.bind("<Button-1>", self.on_canvas_click)
         self.card_canvas.bind("<Leave>", self.hide_tooltip)
-
-        # Привязываем обработчик выбора карты
         self.card_listbox.bind('<<ListboxSelect>>', self.on_card_select)
-        self.select_default_card()
 
+        self.select_default_card()
         self.load_orders_from_db()
+
+    def on_close(self):
+        """Обработчик закрытия окна"""
+        self._is_running = False
+        try:
+            # Очищаем очередь, чтобы избежать попыток обновления после закрытия
+            self._gui_update_queue.clear()
+
+            # Даем время на завершение операций
+            self.after(100, self.destroy)
+        except Exception as e:
+            print(f"Ошибка при закрытии: {e}")
+
+    def _process_gui_updates(self):
+        """Обрабатывает все ожидающие обновления GUI из главного потока"""
+        while self._gui_update_queue and self._is_running:
+            try:
+                func, args, kwargs = self._gui_update_queue.pop(0)
+                func(*args, **kwargs)
+            except Exception as e:
+                print(f"Ошибка при обработке обновления GUI: {e}")
+
+        if self._is_running:
+            self.after(100, self._process_gui_updates)
+
+    def _safe_gui_update(self, func, *args, **kwargs):
+        """Добавляет обновление GUI в очередь (можно вызывать из любого потока)"""
+        if self._is_running:
+            self._gui_update_queue.append((func, args, kwargs))
+
+    def set_optimization_mode(self, choice):
+        """Устанавливает режим оптимизации"""
+        self.optimization_mode = "deep" if "Глубокий" in choice else "normal"
 
     def resize_left_panel(self, event):
         """Изменяет ширину левой панели"""
@@ -473,7 +531,7 @@ class GlassCuttingTab(CTkFrame):
                     self.order_listbox.insert(tk.END, order_text)
 
     def optimize_cutting(self):
-        """Многопоточная оптимизация раскроя с безопасным кэшированием"""
+        """Запускает оптимизацию с выбранным режимом"""
         try:
             self.sheet_width = int(self.entry_sheet_width.get())
             self.sheet_height = int(self.entry_sheet_height.get())
@@ -481,115 +539,287 @@ class GlassCuttingTab(CTkFrame):
             messagebox.showerror("Ошибка", "Неверные размеры листа стекла")
             return
 
+        # Показываем элементы прогресса
+        self.progress_bar.pack(pady=5, fill=tk.X, padx=20)
+        self.status_label.pack(pady=5)
+        self.progress_bar.set(0)
+        self.status_label.configure(text="Подготовка данных...")
+        self.update_idletasks()
+
         orders = self._fetch_orders()
         if not orders:
             messagebox.showwarning("Предупреждение", "Нет заказов для оптимизации.")
+            self._hide_progress()
             return
 
-        # Инициализация структур данных
-        self.groups = []
-        self.unused_elements = defaultdict(list)
-        self.packing_cache = {}
-        self.lock = threading.Lock()
-        sheet_area = self.sheet_width * self.sheet_height
-        min_fill_ratio = 0.85
+        # Запускаем в отдельном потоке
+        threading.Thread(
+            target=self._run_optimization,
+            args=(orders,),
+            daemon=True
+        ).start()
 
-        # Группировка по типам стекла
-        type_groups = defaultdict(list)
-        for order in orders:
-            type_groups[order['type']].append(order)
+    def _run_optimization(self, orders):
+        """Выполняет оптимизацию в фоновом потоке с безопасными обновлениями GUI"""
+        try:
+            # Проверяем флаг перед началом работы
+            if not getattr(self, '_is_running', False):
+                return
 
-        # Функция для обработки одного типа стекла
-        def process_type(window_type, type_orders):
-            try:
-                items = [{
-                    'id': f"{o['order_id']}-{o['window_id']}",
-                    'width': o['width'],
-                    'height': o['height'],
-                    'type': o['type'],
-                    'original': o
-                } for o in type_orders]
+            # Инициализация через безопасные обновления GUI
+            self._safe_gui_update(self._initialize_optimization_ui)
 
-                # Сортировка по убыванию площади
-                items.sort(key=lambda x: x['width'] * x['height'], reverse=True)
-                remaining_items = items.copy()
+            # Основные параметры оптимизации
+            self.groups = []
+            self.unused_elements = defaultdict(list)
+            self.packing_cache = {}
+            self.lock = threading.Lock()
+            sheet_area = self.sheet_width * self.sheet_height
 
-                while remaining_items:
-                    # Создаем новую карту раскроя
-                    current_sheet = {
-                        'items': [],
-                        'used_area': 0,
-                        'type': window_type
-                    }
+            # Настройки алгоритма в зависимости от режима
+            optimization_params = self._get_optimization_params()
 
-                    # Заполняем текущую карту
-                    while current_sheet['used_area'] / sheet_area < min_fill_ratio and remaining_items:
-                        best_item = None
-                        best_fill = current_sheet['used_area'] / sheet_area
+            # Группировка заказов по типам
+            type_groups = defaultdict(list)
+            for order in orders:
+                type_groups[order['type']].append(order)
 
-                        # Поиск лучшего элемента для добавления
-                        for i, item in enumerate(remaining_items):
-                            test_items = current_sheet['items'] + [item]
-                            cache_key = self._create_cache_key(test_items)
+            total_types = len(type_groups)
+            processed_types = 0
 
-                            if cache_key in self.packing_cache:
-                                packed, used_area = self.packing_cache[cache_key]
-                            else:
-                                packed, used_area = self._pack_items_safe(test_items)
-                                with self.lock:
-                                    self.packing_cache[cache_key] = (packed, used_area)
+            # Функция обработки одного типа окон
+            def process_type(window_type, type_orders):
+                nonlocal processed_types
+                try:
+                    if not self._is_running:
+                        return
 
-                            if used_area / sheet_area > best_fill and len(packed) == len(test_items):
-                                best_fill = used_area / sheet_area
-                                best_item = item
-                                best_packed = packed
-                                best_used_area = used_area
+                    # Подготовка элементов
+                    items = self._prepare_items(type_orders)
+                    self._safe_gui_update(self._update_status,
+                                          f"Обработка {window_type} ({len(items)} элементов)...")
 
-                                if best_fill >= min_fill_ratio:
-                                    break
+                    # Сортировка и обработка элементов
+                    items.sort(key=lambda x: x['width'] * x['height'], reverse=True)
+                    remaining_items = items.copy()
 
-                        if best_item:
-                            current_sheet['items'] = best_packed
-                            current_sheet['used_area'] = best_used_area
-                            remaining_items.remove(best_item)
-                        else:
+                    while remaining_items and self._is_running:
+                        # Создаем новый лист для упаковки
+                        current_sheet = self._create_new_sheet(window_type)
+
+                        # Основной цикл заполнения листа
+                        self._fill_sheet(
+                            current_sheet,
+                            remaining_items,
+                            sheet_area,
+                            optimization_params
+                        )
+
+                        # Сохраняем результат если есть элементы
+                        if current_sheet['items'] and self._is_running:
+                            self._save_sheet_result(
+                                current_sheet,
+                                window_type,
+                                sheet_area,
+                                remaining_items,
+                                optimization_params
+                            )
+
+                    # Сохраняем неиспользованные элементы
+                    with self.lock:
+                        self.unused_elements[window_type] = remaining_items
+
+                    # Обновляем прогресс
+                    processed_types += 1
+                    progress = processed_types / total_types
+                    self._safe_gui_update(self._update_progress, progress)
+
+                except Exception as e:
+                    print(f"Ошибка при обработке типа {window_type}: {e}")
+
+            # Запускаем обработку в пуле потоков
+            with ThreadPoolExecutor(max_workers=optimization_params['max_workers']) as executor:
+                futures = [
+                    executor.submit(process_type, wt, to)
+                    for wt, to in type_groups.items()
+                ]
+
+                for future in as_completed(futures):
+                    if not self._is_running:
+                        executor.shutdown(wait=False)
+                        return
+                    future.result()
+
+            # Завершаем оптимизацию
+            if self._is_running:
+                self._safe_gui_update(self._optimization_complete)
+
+        except Exception as e:
+            print(f"Ошибка в потоке оптимизации: {e}")
+            if getattr(self, '_is_running', False):
+                self._safe_gui_update(self._optimization_failed, str(e))
+
+    def _initialize_optimization_ui(self):
+        """Инициализирует UI для оптимизации"""
+        self.progress_bar.pack(pady=5, fill=tk.X, padx=20)
+        self.status_label.pack(pady=5)
+        self.progress_bar.set(0)
+        self.status_label.configure(text="Инициализация...")
+
+    def _get_optimization_params(self):
+        """Возвращает параметры оптимизации в зависимости от режима"""
+        if self.optimization_mode == "deep":
+            return {
+                'min_fill_ratio': 0.98,
+                'max_workers': 2,
+                'sort_algo': rectpack.SORT_SSIDE,
+                'pack_algo': rectpack.MaxRectsBaf,
+                'attempts_per_item': 3
+            }
+        else:
+            return {
+                'min_fill_ratio': 0.90,
+                'max_workers': 4,
+                'sort_algo': rectpack.SORT_AREA,
+                'pack_algo': rectpack.MaxRectsBssf,
+                'attempts_per_item': 1
+            }
+
+    def _prepare_items(self, type_orders):
+        """Подготавливает элементы для обработки"""
+        return [{
+            'id': f"{o['order_id']}-{o['window_id']}",
+            'width': o['width'],
+            'height': o['height'],
+            'type': o['type'],
+            'original': o
+        } for o in type_orders]
+
+    def _create_new_sheet(self, window_type):
+        """Создает новый лист для упаковки"""
+        return {
+            'items': [],
+            'used_area': 0,
+            'type': window_type
+        }
+
+    def _fill_sheet(self, current_sheet, remaining_items, sheet_area, params):
+        """Заполняет лист элементами"""
+        while (current_sheet['used_area'] / sheet_area < params['min_fill_ratio'] and
+               remaining_items and self._is_running):
+
+            best_item = None
+            best_packed = None
+            best_used_area = None
+            best_fill = current_sheet['used_area'] / sheet_area
+
+            # Пробуем несколько вариантов для глубокого перебора
+            for _ in range(params['attempts_per_item']):
+                for i, item in enumerate(remaining_items):
+                    if not self._is_running:
+                        return
+
+                    test_items = current_sheet['items'] + [item]
+                    cache_key = self._create_cache_key(test_items)
+
+                    if cache_key in self.packing_cache:
+                        packed, used_area = self.packing_cache[cache_key]
+                    else:
+                        packed, used_area = self._pack_items_safe(
+                            test_items,
+                            sort_algo=params['sort_algo'],
+                            pack_algo=params['pack_algo']
+                        )
+                        with self.lock:
+                            self.packing_cache[cache_key] = (packed, used_area)
+
+                    if (used_area / sheet_area > best_fill and
+                            len(packed) == len(test_items)):
+                        best_fill = used_area / sheet_area
+                        best_item = item
+                        best_packed = packed
+                        best_used_area = used_area
+
+                        if best_fill >= params['min_fill_ratio']:
                             break
 
-                    # Если карта содержит элементы, сохраняем ее
-                    if current_sheet['items']:
-                        with self.lock:
-                            self._add_completed_sheet(current_sheet, window_type, sheet_area)
+                if best_item:
+                    break
 
-                        # Пытаемся добавить дополнительные элементы
-                        self._try_add_remaining_items(current_sheet, remaining_items, window_type, sheet_area)
+            if best_item:
+                current_sheet['items'] = best_packed
+                current_sheet['used_area'] = best_used_area
+                remaining_items.remove(best_item)
+            else:
+                break
 
-                # Сохраняем неиспользованные элементы
-                with self.lock:
-                    self.unused_elements[window_type] = remaining_items
+    def _save_sheet_result(self, current_sheet, window_type, sheet_area, remaining_items, params):
+        """Сохраняет результат упаковки листа"""
+        with self.lock:
+            self._add_completed_sheet(current_sheet, window_type, sheet_area)
 
-            except Exception as e:
-                print(f"Ошибка при обработке типа {window_type}: {e}")
+        # Дополнительная попытка добавить элементы в глубоком режиме
+        if (self.optimization_mode == "deep" and
+                self._is_running and
+                remaining_items):
+            self._try_add_remaining_items_deep(
+                current_sheet,
+                remaining_items,
+                window_type,
+                sheet_area,
+                params['sort_algo'],
+                params['pack_algo']
+            )
 
-        # Запуск обработки в пуле потоков
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(process_type, wt, to) for wt, to in type_groups.items()]
-            for future in as_completed(futures):
-                future.result()  # Ожидаем завершения и обрабатываем исключения
 
+    def _update_status(self, message):
+        """Обновляет статус в GUI"""
+        self.status_label.configure(text=message)
+        self.update_idletasks()
+
+    def _update_progress(self, value):
+        """Обновляет прогресс-бар"""
+        self.progress_bar.set(value)
+        self.update_idletasks()
+
+    def _optimization_complete(self):
+        """Действия после завершения оптимизации"""
         self._print_final_statistics()
         self.update_interface()
         self.select_default_card()
         self.load_orders_from_db()
+
+        self.status_label.configure(text="Оптимизация завершена!")
+        self.progress_bar.set(1.0)
+        self.after(2000, lambda: self._hide_progress())
+
+    def _optimization_failed(self, error_msg):
+        """Действия при ошибке оптимизации"""
+        if not self.winfo_exists():
+            return
+
+        self._hide_progress()
+        try:
+            messagebox.showerror("Ошибка оптимизации", f"Произошла ошибка:\n{error_msg}")
+            self.status_label.configure(text=f"Ошибка: {error_msg}")
+        except Exception as e:
+            print("Не удалось показать сообщение об ошибке:", e)
+
+    def _hide_progress(self):
+        """Скрывает элементы прогресса"""
+        self.progress_bar.stop()
+        self.progress_bar.pack_forget()
+        self.status_label.pack_forget()
 
     def _create_cache_key(self, items):
         """Создает безопасный ключ для кэша"""
         sizes = tuple(sorted((item['width'], item['height']) for item in items))
         return hash(sizes)
 
-    def _pack_items_safe(self, items):
-        """Безопасная упаковка элементов с обработкой ошибок"""
+    def _pack_items_safe(self, items, sort_algo=rectpack.SORT_AREA, pack_algo=rectpack.MaxRectsBssf):
+        """Безопасная упаковка с настраиваемыми алгоритмами"""
         try:
-            return self.pack_items(items)
+            return self.pack_items(items, sort_algo, pack_algo)
         except Exception as e:
             print(f"Ошибка упаковки: {e}")
             return [], 0
@@ -608,37 +838,59 @@ class GlassCuttingTab(CTkFrame):
         print(
             f"[{window_type}] Добавлена карта {len(self.groups)}. Заполнение: {self.groups[-1]['fill_percentage']:.1f}%")
 
-    def _try_add_remaining_items(self, sheet, remaining_items, window_type, sheet_area):
-        """Пытается добавить оставшиеся элементы в карту"""
+    def _try_add_remaining_items_deep(self, current_sheet, remaining_items, window_type, sheet_area, sort_algo,
+                                      pack_algo):
+        """Дополнительная попытка добавить элементы в глубоком режиме"""
         added_count = 0
         temp_remaining = remaining_items.copy()
 
         for item in temp_remaining:
-            test_items = sheet['items'] + [item]
-            cache_key = self._create_cache_key(test_items)
+            if not self._is_running:
+                break
 
-            if cache_key in self.packing_cache:
-                packed, used_area = self.packing_cache[cache_key]
-            else:
-                packed, used_area = self._pack_items_safe(test_items)
-                with self.lock:
-                    self.packing_cache[cache_key] = (packed, used_area)
+            # Пробуем несколько вариантов размещения
+            for rotation in [0, 90]:  # Пробуем оба варианта поворота
+                width = item['width'] if rotation == 0 else item['height']
+                height = item['height'] if rotation == 0 else item['width']
 
-            if len(packed) == len(test_items) and used_area <= sheet_area:
-                sheet['items'] = packed
-                sheet['used_area'] = used_area
-                remaining_items.remove(item)
-                added_count += 1
-                print(f"[{window_type}] Добавлен дополнительный элемент {item['id']}")
+                test_items = current_sheet['items'] + [{
+                    **item,
+                    'width': width,
+                    'height': height,
+                    'rotation': rotation
+                }]
 
-        if added_count > 0:
+                cache_key = self._create_cache_key(test_items)
+
+                if cache_key in self.packing_cache:
+                    packed, used_area = self.packing_cache[cache_key]
+                else:
+                    packed, used_area = self._pack_items_safe(
+                        test_items,
+                        sort_algo=sort_algo,
+                        pack_algo=pack_algo
+                    )
+                    with self.lock:
+                        self.packing_cache[cache_key] = (packed, used_area)
+
+                if len(packed) == len(test_items) and used_area <= sheet_area:
+                    current_sheet['items'] = packed
+                    current_sheet['used_area'] = used_area
+                    remaining_items.remove(item)
+                    added_count += 1
+                    print(f"[Глубокий режим] Добавлен элемент {item['id']} с поворотом {rotation}°")
+                    break  # Переходим к следующему элементу
+
+        if added_count > 0 and self._is_running:
             with self.lock:
                 self.groups[-1].update({
-                    'items': sheet['items'],
-                    'used_area': sheet['used_area'],
-                    'wasted_area': sheet_area - sheet['used_area'],
-                    'fill_percentage': (sheet['used_area'] / sheet_area) * 100
+                    'items': current_sheet['items'],
+                    'used_area': current_sheet['used_area'],
+                    'wasted_area': sheet_area - current_sheet['used_area'],
+                    'fill_percentage': (current_sheet['used_area'] / sheet_area) * 100
                 })
+
+        return added_count
 
     def _print_final_statistics(self):
         """Выводит итоговую статистику после оптимизации"""
@@ -748,15 +1000,66 @@ class GlassCuttingTab(CTkFrame):
             'wasted_area': (self.sheet_width * self.sheet_height) - used_area
         })
 
-    def pack_items(self, items):
-        """Надежная упаковка элементов с обработкой всех крайних случаев"""
+    def _try_add_remaining_items_deep(self, current_sheet, remaining_items, window_type, sheet_area, sort_algo,
+                                      pack_algo):
+        """Дополнительная попытка добавить элементы в глубоком режиме оптимизации"""
+        added_count = 0
+        temp_remaining = remaining_items.copy()
+
+        for item in temp_remaining:
+            # Пробуем несколько вариантов размещения
+            for rotation in [0, 90]:  # Пробуем оба варианта поворота
+                width = item['width'] if rotation == 0 else item['height']
+                height = item['height'] if rotation == 0 else item['width']
+
+                test_items = current_sheet['items'] + [{
+                    **item,
+                    'width': width,
+                    'height': height,
+                    'rotation': rotation
+                }]
+
+                cache_key = self._create_cache_key(test_items)
+
+                if cache_key in self.packing_cache:
+                    packed, used_area = self.packing_cache[cache_key]
+                else:
+                    packed, used_area = self._pack_items_safe(
+                        test_items,
+                        sort_algo=sort_algo,
+                        pack_algo=pack_algo
+                    )
+                    with self.lock:
+                        self.packing_cache[cache_key] = (packed, used_area)
+
+                if len(packed) == len(test_items) and used_area <= sheet_area:
+                    current_sheet['items'] = packed
+                    current_sheet['used_area'] = used_area
+                    remaining_items.remove(item)
+                    added_count += 1
+                    print(f"[Глубокий режим] Добавлен элемент {item['id']} с поворотом {rotation}°")
+                    break  # Переходим к следующему элементу
+
+        if added_count > 0:
+            with self.lock:
+                self.groups[-1].update({
+                    'items': current_sheet['items'],
+                    'used_area': current_sheet['used_area'],
+                    'wasted_area': sheet_area - current_sheet['used_area'],
+                    'fill_percentage': (current_sheet['used_area'] / sheet_area) * 100
+                })
+
+        return added_count
+
+    def pack_items(self, items, sort_algo=rectpack.SORT_AREA, pack_algo=rectpack.MaxRectsBssf):
+        """Упаковка элементов с настраиваемыми параметрами"""
         if not items:
             return [], 0
 
         packer = rectpack.newPacker(
             rotation=True,
-            sort_algo=rectpack.SORT_AREA,
-            pack_algo=rectpack.MaxRectsBaf,  # Используем более надежный алгоритм
+            sort_algo=sort_algo,
+            pack_algo=pack_algo,
             bin_algo=rectpack.PackingBin.Global
         )
 
