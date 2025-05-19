@@ -74,7 +74,7 @@ def parse_excel_order(file_path):
                     one_skip = False
                     continue
                 row = sheet.row_values(row_idx)
-                print("row steklo ", row)
+                # print("row steklo ", row)
                 # Ищем начало таблицы со стеклопакетами
                 if row and len(row) > 1:
                     first_cell = str(row[1]).strip()
@@ -128,9 +128,9 @@ def parse_excel_order(file_path):
                             }
 
                             order_data['materials'].append(material_data)
-                            print(material_data, "     dsfsd")
-                            for key, value in material_data.items():
-                                print(f"{key}: {value}")
+                            # print(material_data, "     dsfsd")
+                            # for key, value in material_data.items():
+                                # print(f"{key}: {value}")
                         else:
                             start_parsing_materials = False
                     except (ValueError, IndexError, AttributeError) as e:
@@ -883,7 +883,7 @@ class ProductionPlanningTab(CTkFrame):
             return
 
         if messagebox.askyesno("Подтверждение", "Удалить выбранный стеклопакет?"):
-            print(selection, "===win==", selection[0])
+            # print(selection, "===win==", selection[0])
             window_id = self.windows_tree.item(selection[0], "values")[0]
             delete_window_from_production_order(window_id)
             self.load_windows_for_order(self.current_order_id)
@@ -1039,7 +1039,7 @@ class ProductionPlanningTab(CTkFrame):
             return
 
         if messagebox.askyesno("Подтверждение", "Удалить выбранный материал?"):
-            print(selection, "===mat==", selection[0])
+            # print(selection, "===mat==", selection[0])
             material_id = self.materials_tree.item(selection[0], "values")[0]
             delete_material_from_production_order(material_id)
             self.load_materials_for_order(self.current_order_id)
