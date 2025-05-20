@@ -1,62 +1,13 @@
 import tkinter as tk
-from tkinter import ttk
-from typing import Dict, List, Tuple, Optional
 
-from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
+from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
 from tkinter import messagebox
 
-from GlassCutter import GlassCuttingTab
 from Item import NumberItem
 from GroupSolver import GroupSolver
-from ProductionPlanning import ProductionPlanningTab
-from Users import check_credentials
-from database import (create_database, add_order_to_db, delete_order_from_db, update_order_in_db,
-                      get_all_orders_from_db, get_windows_for_production_order, get_production_orders)
-from warehouse import WarehouseTab
 
-
-class AuthWindow(CTk):
-    def __init__(self, parent):
-        super().__init__()
-        self.parent = parent
-        self.geometry("300x200")
-        self.title("Авторизация")
-        self.protocol("WM_DELETE_WINDOW", self.on_close)  # Обрабатываем закрытие окна
-
-        self.label_login = CTkLabel(self, text="Логин:")
-        self.label_login.pack(pady=5)
-
-        self.entry_login = CTkEntry(self, width=200)
-        self.entry_login.pack(pady=5)
-
-        self.label_password = CTkLabel(self, text="Пароль:")
-        self.label_password.pack(pady=5)
-
-        self.entry_password = CTkEntry(self, width=200, show="*")
-        self.entry_password.pack(pady=5)
-        self.entry_password.bind("<Return>", lambda event: self.authenticate())  # Обработка Enter в поле пароля
-
-        self.button_login = CTkButton(self, text="Войти", command=self.authenticate)
-        self.button_login.pack(pady=10)
-        self.entry_login.bind("<Return>", lambda event: self.entry_password.focus())
-
-    def authenticate(self):
-        username = self.entry_login.get()
-        password = self.entry_password.get()
-
-        result = check_credentials(username, password)
-        if result is True:
-            self.destroy()
-            self.parent.deiconify()  # Показываем главное окно
-        elif result == "wrong_password":
-            messagebox.showerror("Ошибка", "Неверный пароль.")
-        elif result == "no_user":
-            messagebox.showerror("Ошибка", "Пользователь не найден.")
-
-    def on_close(self):
-        if messagebox.askyesno("Выход", "Вы уверены, что хотите выйти?"):
-            self.destroy()
-            self.parent.destroy()  # Закрываем главное окно, чтобы программа завершилась корректно
+from database import (add_order_to_db, delete_order_from_db, update_order_in_db,
+                      get_all_orders_from_db)
 
 
 class FrameCuttingTab(CTkFrame):
@@ -297,50 +248,3 @@ class FrameCuttingTab(CTkFrame):
         if selected_index:
             group = self.groups[selected_index[0]]
             self.draw_horizontal_cutting_plan(group)
-
-
-class CuttingOptimizer(CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Оптимизация раскроя заготовки")
-        self.geometry("1150x800")
-        self.withdraw()
-
-        # Создаем вкладки
-        self.tab_control = ttk.Notebook(self)
-
-        # Вкладка для раскроя рамки
-        self.frame_tab = FrameCuttingTab(self)
-        self.tab_control.add(self.frame_tab, text="Раскрой рамки")
-
-        # Вкладка для раскроя стекла
-        self.glass_tab = GlassCuttingTab(self)
-        self.tab_control.add(self.glass_tab, text="Раскрой стекла")
-
-        # Вкладка для планирования производства
-        self.planning_tab = ProductionPlanningTab(self)
-        self.tab_control.add(self.planning_tab, text="Планирование производства")
-
-        # Вкладка для планирования производства
-        self.warehouse_tab = WarehouseTab(self)
-        self.tab_control.add(self.warehouse_tab, text="Склад")
-
-        self.tab_control.pack(expand=1, fill="both")
-
-
-        # Привязываем обработчики событий
-        self.frame_tab.card_listbox.bind('<<ListboxSelect>>', self.frame_tab.display_card_details)
-        self.glass_tab.card_listbox.bind('<<ListboxSelect>>', self.glass_tab.display_card_details)
-
-    def on_orders_updated(self):
-        """Обновляем списки заказов в обеих вкладках"""
-        self.frame_tab.load_orders_from_db()
-        self.glass_tab.load_orders_from_db()
-
-
-if __name__ == "__main__":
-    create_database()
-    app = CuttingOptimizer()
-    auth_window = AuthWindow(app)
-
-    auth_window.mainloop()

@@ -26,12 +26,17 @@ class GlassCuttingTab(CTkFrame):
         self.groups = []
         self.sheet_width = 6000
         self.sheet_height = 6000
+
         # Добавляем минимальный и максимальный масштаб
-        self.min_zoom = 0.5  # Минимальный масштаб (30%)
-        self.max_zoom = 1.5  # Максимальный масштаб (150%)
-        self.current_zoom = 1.0  # Текущий масштаб
-        self.zoom_level = 0.8
+        self.zoom_level_prev = 1.0  # Предыдущий уровень масштабирования
+        self.current_zoom = 1.0  # Текущий уровень масштабирования (1.0 = 100%)
+        self.zoom_factor = 1.1  # Коэффициент масштабирования при прокрутке
+        self.min_zoom = 0.5  # Минимальный масштаб
+        self.max_zoom = 3.0  # Максимальный масштаб
+        self.canvas_offset_x = 0
+        self.canvas_offset_y = 0
         self.last_mouse_pos = (0, 0)  # Для запоминания позиции курсора
+
         self.optimization_mode = "normal"  # "normal" или "deep"
         self._is_running = True
         self._gui_update_queue = []
@@ -165,6 +170,7 @@ class GlassCuttingTab(CTkFrame):
 
         # Привязка событий
         self.card_canvas.bind("<Control-MouseWheel>", self.on_mousewheel_zoom)
+        self.card_canvas.bind("<ButtonPress-2>", self.reset_view)  # Для сброса масштаба
         self.card_canvas.bind("<Motion>", self.store_mouse_position)
         self.card_canvas.bind("<Motion>", self.on_canvas_hover)
         self.card_canvas.bind("<Button-1>", self.on_canvas_click)
@@ -180,37 +186,93 @@ class GlassCuttingTab(CTkFrame):
         """Запоминаем текущую позицию курсора"""
         self.last_mouse_pos = (event.x, event.y)
 
+    def reset_view(self, event=None):
+        """Сброс масштаба и положения"""
+        self.current_zoom = 1.0
+        self.canvas_offset_x = 0
+        self.canvas_offset_y = 0
+        if self.groups and self.card_listbox.curselection():
+            self.display_cutting_plan(self.card_listbox.curselection()[0])
+
     def on_mousewheel_zoom(self, event):
-        """Масштабирование с центром в позиции курсора"""
+        """Масштабирование с учетом позиции курсора"""
         if not self.groups or not self.card_listbox.curselection():
             return
 
         # Определяем направление масштабирования
-        zoom_factor = 1.1 if event.delta > 0 else 0.9
-        new_zoom = self.current_zoom * zoom_factor
-        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
+        zoom_factor = 1.1 if event.delta > 0 else 1 / 1.1
+        new_zoom = max(self.min_zoom, min(self.max_zoom, self.current_zoom * zoom_factor))
 
         if new_zoom == self.current_zoom:
             return
 
-        # Координаты курсора относительно холста
-        mouse_x, mouse_y = self.last_mouse_pos
+        # Сохраняем позицию курсора в реальных координатах (до масштабирования)
+        group = self.groups[self.card_listbox.curselection()[0]]
+        scale = self.get_current_scale(group)
+        x = self.card_canvas.canvasx(event.x) / scale
+        y = self.card_canvas.canvasy(event.y) / scale
 
-        # Коэффициент изменения масштаба
-        zoom_change = new_zoom / self.current_zoom
-
-        # Применяем трансформацию к холсту
-        self.card_canvas.scale("all",
-                               mouse_x, mouse_y,
-                               zoom_change, zoom_change)
-
+        # Обновляем масштаб
         self.current_zoom = new_zoom
 
-        # Обновляем информацию о масштабе
-        group = self.groups[self.card_listbox.curselection()[0]]
-        self.update_info_panel(group,
-                               self.card_listbox.curselection()[0],
-                               self.get_current_scale(group))
+        # Перерисовываем план раскроя
+        self.display_cutting_plan(self.card_listbox.curselection()[0])
+
+        # Вычисляем новую позицию курсора после масштабирования
+        new_scale = self.get_current_scale(group)
+        new_x = x * new_scale
+        new_y = y * new_scale
+
+        # Прокручиваем холст так, чтобы точка под курсором осталась на месте
+        self.card_canvas.scan_mark(event.x, event.y)
+        self.card_canvas.scan_dragto(
+            int(event.x - (new_x - x * scale)),
+            int(event.y - (new_y - y * scale)),
+            gain=1
+        )
+
+    def display_cutting_plan(self, index):
+        """Отображение с учетом текущего масштаба (без автоскейла)"""
+        if not self.groups or index >= len(self.groups):
+            return
+
+        group = self.groups[index]
+        self.card_canvas.delete("all")
+
+        # Рассчитываем базовый масштаб для полного отображения
+        canvas_width = self.card_canvas.winfo_width()
+        canvas_height = self.card_canvas.winfo_height()
+        base_scale = min(canvas_width / group['width'],
+                         canvas_height / group['height']) * 0.95  # Небольшой отступ
+
+        # Применяем текущий масштаб
+        scale = base_scale * self.current_zoom
+
+        # Рисуем все элементы
+        self.draw_background(group, scale)
+        self.draw_grid(group, scale)
+
+        # Границы листа
+        self.card_canvas.create_rectangle(
+            0, 0,
+            group['width'] * scale,
+            group['height'] * scale,
+            outline="black", width=3
+        )
+
+        # Рисуем элементы
+        for item in group['items']:
+            self.draw_glass_item(item, scale)
+
+        # Обновляем инфопанель
+        self.update_info_panel(group, index, scale)
+
+        # Восстанавливаем выделение
+        if hasattr(self, 'selected_item') and self.selected_item:
+            for item in group['items']:
+                if item['id'] == self.selected_item['id']:
+                    self.select_item(item, scale)
+                    break
 
     def _on_canvas_resize(self, event):
         """Обновляет отображение при изменении размера холста"""
@@ -405,7 +467,7 @@ class GlassCuttingTab(CTkFrame):
             self.display_cutting_plan(0)
 
     def on_canvas_hover(self, event):
-        """Всплывающая подсказка при наведении"""
+        """Всплывающая подсказка при наведении с учетом масштаба"""
         if not self.groups or not self.card_listbox.curselection():
             self.hide_tooltip()
             return
@@ -413,38 +475,31 @@ class GlassCuttingTab(CTkFrame):
         group = self.groups[self.card_listbox.curselection()[0]]
         scale = self.get_current_scale(group)
 
+        # Преобразуем координаты курсора с учетом текущего масштаба
+        real_x = self.card_canvas.canvasx(event.x) / scale
+        real_y = self.card_canvas.canvasy(event.y) / scale
+
         # Ищем заготовку под курсором
         new_hover_item = None
         for item in group['items']:
-            x1 = item['x'] * scale
-            y1 = item['y'] * scale
-            x2 = x1 + item['width'] * scale
-            y2 = y1 + item['height'] * scale
+            x1 = item['x']
+            y1 = item['y']
+            x2 = x1 + item['width']
+            y2 = y1 + item['height']
 
-            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+            if x1 <= real_x <= x2 and y1 <= real_y <= y2:
                 new_hover_item = item
                 break
 
-        # Обновляем hover-эффект только если курсор перешел на новый элемент или вышел с элемента
+        # Обновляем hover-эффект
         if new_hover_item != self.hover_item:
             self.update_hover_effect(new_hover_item, scale)
             self.hover_item = new_hover_item
 
-            # Показываем tooltip только если нашли элемент
             if new_hover_item:
                 self.show_tooltip(event.x, event.y, new_hover_item)
             else:
-                self.hide_tooltip()  # Скрываем подсказку если курсор на пустом месте
-
-        # Если курсор перемещается по тому же элементу, просто обновляем позицию tooltip
-        elif new_hover_item and hasattr(self, 'tooltip_bg') and self.tooltip_bg:
-            # Перемещаем существующую подсказку
-            self.card_canvas.coords(self.tooltip_bg, event.x + 10, event.y + 10, event.x + 150, event.y + 40)
-            self.card_canvas.coords(self.tooltip_text, event.x + 15, event.y + 15)
-
-        # Дополнительная проверка: если курсор на пустом месте и есть подсказка - скрываем
-        elif not new_hover_item and (hasattr(self, 'tooltip_bg') and self.tooltip_bg):
-            self.hide_tooltip()
+                self.hide_tooltip()
 
     def update_hover_effect(self, item, scale):
         """Обновляет подсветку при наведении"""
@@ -465,7 +520,7 @@ class GlassCuttingTab(CTkFrame):
             self.card_canvas.tag_raise(self.hover_rect)
 
     def show_tooltip(self, x, y, item):
-        """Показывает всплывающую подсказку"""
+        """Показывает всплывающую подсказку в фиксированной позиции относительно курсора"""
         # Сначала скрываем предыдущую подсказку
         self.hide_tooltip()
 
@@ -473,10 +528,14 @@ class GlassCuttingTab(CTkFrame):
         if item.get('rotation'):
             text += f" (повернуто)"
 
-        # Создаем фон для tooltip сначала (чтобы текст был поверх него)
+        # Фиксированное смещение от курсора
+        offset_x = 15
+        offset_y = 15
+
+        # Создаем фон для tooltip
         self.tooltip_bg = self.card_canvas.create_rectangle(
-            x + 10, y + 10,
-            x + 150, y + 40,  # Фиксированный размер, чтобы не вычислять bbox
+            x + offset_x, y + offset_y,
+            x + offset_x + 150, y + offset_y + 30,
             fill="#FFFFE0",
             outline="#CCCCCC",
             tags="tooltip"
@@ -484,13 +543,17 @@ class GlassCuttingTab(CTkFrame):
 
         # Затем создаем текст
         self.tooltip_text = self.card_canvas.create_text(
-            x + 15, y + 15,
+            x + offset_x + 5, y + offset_y + 5,
             text=text,
             font=("Arial", 10),
             fill="black",
             anchor="nw",
             tags="tooltip"
         )
+
+        # Поднимаем подсказку на верхний уровень
+        self.card_canvas.tag_raise(self.tooltip_bg)
+        self.card_canvas.tag_raise(self.tooltip_text)
 
     def hide_tooltip(self, event=None):
         """Скрывает всплывающую подсказку"""
@@ -509,26 +572,28 @@ class GlassCuttingTab(CTkFrame):
         self.hover_item = None
 
     def on_canvas_click(self, event):
-        """Упрощенный обработчик клика с гарантией выбранной карты"""
+        """Обработчик клика с учетом масштаба"""
         try:
-            # Гарантируем, что есть выбранная карта
             if not self.groups or not self.card_listbox.curselection():
-                self.card_listbox.selection_set(0)  # Форсируем выбор первой карты
+                return
 
             group = self.groups[self.card_listbox.curselection()[0]]
             scale = self.get_current_scale(group)
 
-            # Остальная логика обработки клика остается без изменений
+            # Преобразуем координаты клика с учетом текущего масштаба
+            real_x = self.card_canvas.canvasx(event.x) / scale
+            real_y = self.card_canvas.canvasy(event.y) / scale
+
             self.clear_selection()
 
             clicked_item = None
             for item in group['items']:
-                x1 = item['x'] * scale
-                y1 = item['y'] * scale
-                x2 = x1 + item['width'] * scale
-                y2 = y1 + item['height'] * scale
+                x1 = item['x']
+                y1 = item['y']
+                x2 = x1 + item['width']
+                y2 = y1 + item['height']
 
-                if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                if x1 <= real_x <= x2 and y1 <= real_y <= y2:
                     clicked_item = item
                     break
 
@@ -538,8 +603,21 @@ class GlassCuttingTab(CTkFrame):
                 self.select_order_in_list(clicked_item['id'])
 
         except Exception as e:
-            print(f"Ошибка: {e}")
+            print(f"Ошибка при клике: {e}")
             self.clear_selection()
+
+    def canvas_to_real_coords(self, x, y):
+        """Преобразует координаты холста в реальные координаты с учетом масштаба и смещения"""
+        if not self.groups or not self.card_listbox.curselection():
+            return x, y
+
+        group = self.groups[self.card_listbox.curselection()[0]]
+        scale = self.get_current_scale(group)
+
+        real_x = (x - self.canvas_offset_x) / scale
+        real_y = (y - self.canvas_offset_y) / scale
+
+        return real_x, real_y
 
     def create_selection_rect(self, item, scale):
         """Создает прямоугольник выделения"""
@@ -587,15 +665,19 @@ class GlassCuttingTab(CTkFrame):
         self.card_canvas.tag_raise(self.selection_rect)
         self.selected_item = item
 
-
     def select_order_in_list(self, order_id):
         """Выбирает заказ в списке с защитой от ошибок"""
         try:
+            # Очищаем текущее выделение
+            self.order_listbox.selection_clear(0, tk.END)
+
+            # Ищем нужный заказ
             for i in range(self.order_listbox.size()):
-                if str(order_id) in self.order_listbox.get(i):
-                    self.order_listbox.selection_clear(0, tk.END)
+                item_text = self.order_listbox.get(i)
+                if str(order_id) in item_text.split(':')[0]:  # Ищем в начале строки (ID заказа)
                     self.order_listbox.selection_set(i)
                     self.order_listbox.see(i)
+                    self.order_listbox.activate(i)  # Активируем элемент
                     break
         except Exception as e:
             print(f"Ошибка при выборе заказа: {e}")
@@ -605,15 +687,12 @@ class GlassCuttingTab(CTkFrame):
         canvas_width = self.card_canvas.winfo_width()
         canvas_height = self.card_canvas.winfo_height()
 
-        # Базовый масштаб (как раньше)
+        # Базовый масштаб для полного отображения
         base_scale = min(canvas_width / group['width'],
-                         canvas_height / group['height'])
+                         canvas_height / group['height']) * 0.95  # Небольшой отступ
 
         # Применяем текущий масштаб
-        scale = base_scale * self.current_zoom
-
-        # Ограничиваем, чтобы не был меньше базового
-        return max(base_scale, scale)
+        return base_scale * self.current_zoom
 
     def load_orders_from_db(self):
         """Загружает стеклопакеты из production orders с сохранением типа"""
@@ -1437,57 +1516,6 @@ class GlassCuttingTab(CTkFrame):
         if self.groups:
             self.display_cutting_plan(0)
 
-    def display_cutting_plan(self, index):
-        """Отображение с учетом текущего масштаба (без автоскейла)"""
-        if not self.groups or index >= len(self.groups):
-            return
-
-        group = self.groups[index]
-        self.card_canvas.delete("all")
-
-        # Базовый масштаб
-        canvas_width = self.card_canvas.winfo_width()
-        canvas_height = self.card_canvas.winfo_height()
-        base_scale = min(canvas_width / group['width'],
-                         canvas_height / group['height'])
-
-        # Текущий масштаб с ограничениями
-        scale = base_scale * self.current_zoom
-
-        # Рисуем все элементы
-        self.draw_background(group, scale)
-        self.draw_grid(group, scale)
-
-        # Границы листа
-        self.card_canvas.create_rectangle(
-            0, 0,
-            group['width'] * scale,
-            group['height'] * scale,
-            outline="black", width=3
-        )
-
-        # Рисуем элементы
-        for item in group['items']:
-            self.draw_glass_item(item, scale)
-
-        # Обновляем инфопанель
-        self.update_info_panel(group, index, scale)
-
-        # Восстанавливаем выделение
-        if hasattr(self, 'selected_item') and self.selected_item:
-            for item in group['items']:
-                if item['id'] == self.selected_item['id']:
-                    self.select_item(item, scale)
-                    break
-
-    def draw_background(self, group, scale):
-        """Рисует фон с учетом масштаба"""
-        self.card_canvas.create_rectangle(
-            0, 0,
-            group['width'] * scale,
-            group['height'] * scale,
-            fill="red", stipple="gray25", outline=""
-        )
 
     def draw_grid(self, group, scale):
         """Рисует сетку с шагом 1000 мм"""
@@ -1496,16 +1524,16 @@ class GlassCuttingTab(CTkFrame):
 
         # Вертикальные линии
         for x in range(0, group['width'] + grid_step, grid_step):
-            x_pos = x * scale
+            x_pos = self.canvas_offset_x + x * scale
             self.card_canvas.create_line(
-                x_pos, 0,
-                x_pos, group['height'] * scale,
+                x_pos, self.canvas_offset_y,
+                x_pos, self.canvas_offset_y + group['height'] * scale,
                 fill=grid_color, dash=(2, 2)
             )
             # Подписи осей X
             if x > 0:
                 self.card_canvas.create_text(
-                    x_pos, 10,
+                    x_pos, self.canvas_offset_y + 10,
                     text=f"{x} мм",
                     font=("Arial", 8),
                     anchor=tk.N
@@ -1513,77 +1541,80 @@ class GlassCuttingTab(CTkFrame):
 
         # Горизонтальные линии
         for y in range(0, group['height'] + grid_step, grid_step):
-            y_pos = y * scale
+            y_pos = self.canvas_offset_y + y * scale
             self.card_canvas.create_line(
-                0, y_pos,
-                group['width'] * scale, y_pos,
+                self.canvas_offset_x, y_pos,
+                self.canvas_offset_x + group['width'] * scale, y_pos,
                 fill=grid_color, dash=(2, 2)
             )
             # Подписи осей Y
             if y > 0:
                 self.card_canvas.create_text(
-                    10, y_pos,
+                    self.canvas_offset_x + 10, y_pos,
                     text=f"{y} мм",
                     font=("Arial", 8),
                     anchor=tk.W
                 )
 
+    def draw_background(self, group, scale):
+        """Рисует фон с учетом масштаба"""
+        self.card_canvas.create_rectangle(
+            self.canvas_offset_x, self.canvas_offset_y,
+            self.canvas_offset_x + group['width'] * scale,
+            self.canvas_offset_y + group['height'] * scale,
+            fill="red", stipple="gray25", outline=""
+        )
+
     def draw_glass_item(self, item, scale):
-        """Рисует одну заготовку с подписями размеров"""
+        """Рисует стеклопакет с учетом масштаба"""
         x1 = item['x'] * scale
         y1 = item['y'] * scale
         x2 = x1 + item['width'] * scale
         y2 = y1 + item['height'] * scale
 
-        # Цвет в зависимости от поворота
         color = "#4CAF50" if item['rotation'] == 0 else "#2196F3"
-
-        # Рисуем элемент
-        self.card_canvas.create_rectangle(
+        rect_id = self.card_canvas.create_rectangle(
             x1, y1, x2, y2,
-            outline="black", fill=color, width=1
+            outline="black", fill=color, width=1,
+            tags=("glass_item", f"item_{item['id']}")
         )
 
-        # Определяем минимальный размер для отображения текста
-        min_size_for_text = 50 * scale  # Минимальный размер в пикселях для отображения текста
-
-        # Общий размер шрифта для обеих подписей
-        font_size = max(8, min(12, int(min((x2 - x1), (y2 - y1)) / 15)))
-
-        # Подпись длины (вдоль верхнего края)
-        if (x2 - x1) > min_size_for_text:
+        # Добавляем подписи
+        if (x2 - x1) > 50 * scale:
+            font_size = max(8, min(12, int((x2 - x1) / 15)))
             self.card_canvas.create_text(
-                (x1 + x2) / 2, y1 + 10 * scale,  # 10px от верхнего края
+                (x1 + x2) / 2, y1 + 10 * scale,
                 text=f"{item['width']} мм",
                 font=("Arial", font_size),
                 fill="black",
-                anchor="n"
+                anchor="n",
+                tags=("glass_label", f"label_{item['id']}")
             )
 
-        # Подпись ширины (вдоль левого края) - смещена правее и ниже
-        if (y2 - y1) > min_size_for_text:
+        if (y2 - y1) > 50 * scale:
+            font_size = max(8, min(12, int((y2 - y1) / 15)))
             self.card_canvas.create_text(
-                x1 + 25 * scale, (y1 + y2) / 2 + 15 * scale,  # 25px от левого края и 15px вниз от центра
+                x1 + 15 * scale, (y1 + y2) / 2 + 5 * scale,
                 text=f"{item['height']} мм",
                 font=("Arial", font_size),
                 fill="black",
                 anchor="w",
-                angle=90
+                angle=90,
+                tags=("glass_label", f"label_{item['id']}")
             )
 
-        # Подпись номера заказа и порядкового номера (если элемент достаточно большой)
         if (x2 - x1) > 100 * scale and (y2 - y1) > 60 * scale:
-        # Получаем номер заказа и порядковый номер из ID
             id_parts = item['id'].split('-')
-        order_num = id_parts[0] if len(id_parts) > 0 else "?"
-        seq_num = id_parts[1] if len(id_parts) > 1 else "?"
+            order_num = id_parts[0] if len(id_parts) > 0 else "?"
+            seq_num = id_parts[1] if len(id_parts) > 1 else "?"
 
-        self.card_canvas.create_text(
-            (x1 + x2) / 2, (y1 + y2) / 2,
-            text=f"{order_num}-{seq_num}",  # Формат "номер заказа-порядковый номер"
-            font=("Arial", font_size),
-            fill="black"
-        )
+            self.card_canvas.create_text(
+                (x1 + x2) / 2, (y1 + y2) / 2,
+                text=f"{order_num}-{seq_num}",
+                font=("Arial", max(8, min(12, int(min(x2 - x1, y2 - y1) / 15)))),
+                fill="black",
+                tags=("glass_label", f"label_{item['id']}")
+            )
 
     def update_info_panel(self, group, index, scale):
         """Обновляет информационную панель"""
@@ -1598,7 +1629,7 @@ class GlassCuttingTab(CTkFrame):
                  f"Масштаб: 1:{int(1 / scale)} | "
                  f"Сетка: 1000 мм"
         )
-    #
+
     # def calculate_utilization(self, group):
     #     """Вычисляет процент использования листа"""
     #     used_area = sum(item['width'] * item['height'] for item in group['items'])
