@@ -10,7 +10,9 @@ from database import (add_production_order, get_production_orders,
                       update_production_order_status, delete_production_order,
                       add_window_to_production_order, get_windows_for_production_order,
                       delete_window_from_production_order, delete_material_from_production_order,
-                      add_material_to_production_order, get_materials_for_production_order)
+                      add_material_to_production_order, get_materials_for_production_order, get_all_cutting_materials,
+                      get_all_main_glass_materials, get_all_triplex_materials, get_all_window_materials,
+                      get_all_film_materials, get_all_component_materials)
 
 
 def parse_excel_order(file_path):
@@ -889,7 +891,7 @@ class ProductionPlanningTab(CTkFrame):
             self.load_windows_for_order(self.current_order_id)
 
     def load_warehouse_data(self):
-        """Загрузка и отображение суммарных данных по материалам"""
+        """Загрузка и отображение суммарных данных по материалам с учетом остатков на складе"""
         # Очищаем таблицу
         for item in self.warehouse_tree.get_children():
             self.warehouse_tree.delete(item)
@@ -928,18 +930,55 @@ class ProductionPlanningTab(CTkFrame):
 
                 materials_sum[mat_type]['amount'] += amount
 
+        # Функция для поиска материала на складах по частичному совпадению
+        def find_material_on_warehouse(material_name):
+            # Получаем данные со всех складов
+            warehouses = [
+                get_all_component_materials(),
+                get_all_film_materials(),
+                get_all_window_materials(),
+                get_all_triplex_materials(),
+                get_all_main_glass_materials(),
+                get_all_cutting_materials()
+            ]
+
+            # Ищем частичное совпадение в названии материала
+            for warehouse in warehouses:
+                for item in warehouse:
+                    warehouse_name = item[2]  # Название материала на складе
+                    if material_name.lower() in warehouse_name.lower():
+                        balance = item[8] if len(item) > 8 else item[7]  # Индекс может отличаться
+                        unit = item[3]  # Единица измерения
+                        try:
+                            return {
+                                'amount': float(balance) if balance else 0.0,
+                                'unit': unit
+                            }
+                        except (ValueError, TypeError):
+                            return {'amount': 0.0, 'unit': 'шт.'}
+
+            return None
+
         # Сортируем материалы по алфавиту
         sorted_materials = sorted(materials_sum.items(), key=lambda x: x[0])
 
         # Добавляем данные в таблицу
         for mat_type, data in sorted_materials:
             # Форматируем значение с единицей измерения
-            used_value = f"{round(data['amount'], 2)} {data['dimension']}"
+            used_value = f"{round(data['amount'], 3)} {data['dimension']}"
+
+            # Ищем материал на складах
+            warehouse_material = find_material_on_warehouse(mat_type)
+
+            if warehouse_material:
+                stock_value = f"{round(warehouse_material['amount'], 3)} {warehouse_material['unit']}"
+            else:
+                stock_value = "Не найден"
 
             self.warehouse_tree.insert("", tk.END,
                                        values=(mat_type,
                                                used_value,
-                                               "N/A"))
+                                               stock_value))
 
     def load_materials_for_order(self, order_id):
         """Загрузка списка материалов для заказа с нумерацией"""
