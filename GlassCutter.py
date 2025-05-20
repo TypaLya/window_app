@@ -20,12 +20,18 @@ from database import (get_windows_for_production_order, get_production_orders)
 class GlassCuttingTab(CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
+        self.bind("<Visibility>", lambda e: self.update_orders_list())
         self.min_rotation_angle = 90
         self.parent = parent
         self.groups = []
         self.sheet_width = 6000
         self.sheet_height = 6000
+        # Добавляем минимальный и максимальный масштаб
+        self.min_zoom = 0.5  # Минимальный масштаб (30%)
+        self.max_zoom = 1.5  # Максимальный масштаб (150%)
+        self.current_zoom = 1.0  # Текущий масштаб
         self.zoom_level = 0.8
+        self.last_mouse_pos = (0, 0)  # Для запоминания позиции курсора
         self.optimization_mode = "normal"  # "normal" или "deep"
         self._is_running = True
         self._gui_update_queue = []
@@ -111,6 +117,17 @@ class GlassCuttingTab(CTkFrame):
         self.optimization_combobox.pack(side=tk.LEFT)
         self.optimization_combobox.set("Быстрый (по умолчанию)")
 
+        # Добавляем поле для порога заполненности
+        self.threshold_frame = CTkFrame(self.optimization_control_frame)
+        self.threshold_frame.pack(side=tk.LEFT, padx=(10, 0))
+
+        self.threshold_label = CTkLabel(self.threshold_frame, text="Порог заполнения (%):")
+        self.threshold_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.threshold_entry = CTkEntry(self.threshold_frame, width=50)
+        self.threshold_entry.insert(0, "90")  # Значение по умолчанию
+        self.threshold_entry.pack(side=tk.LEFT)
+
         # Прогресс-бар и статус
         self.progress_bar = CTkProgressBar(self.center_frame, mode='determinate')
         self.progress_bar.pack(pady=5, fill=tk.X, padx=20)
@@ -147,13 +164,91 @@ class GlassCuttingTab(CTkFrame):
         self.scrollbar.configure(command=self.order_listbox.yview)
 
         # Привязка событий
+        self.card_canvas.bind("<Control-MouseWheel>", self.on_mousewheel_zoom)
+        self.card_canvas.bind("<Motion>", self.store_mouse_position)
         self.card_canvas.bind("<Motion>", self.on_canvas_hover)
         self.card_canvas.bind("<Button-1>", self.on_canvas_click)
         self.card_canvas.bind("<Leave>", self.hide_tooltip)
+        # Привязываем обработчик изменения размера
+        self.card_canvas.bind("<Configure>", self._on_canvas_resize)
         self.card_listbox.bind('<<ListboxSelect>>', self.on_card_select)
 
         self.select_default_card()
-        self.load_orders_from_db()
+        self.update_orders_list()
+
+    def store_mouse_position(self, event):
+        """Запоминаем текущую позицию курсора"""
+        self.last_mouse_pos = (event.x, event.y)
+
+    def on_mousewheel_zoom(self, event):
+        """Масштабирование с центром в позиции курсора"""
+        if not self.groups or not self.card_listbox.curselection():
+            return
+
+        # Определяем направление масштабирования
+        zoom_factor = 1.1 if event.delta > 0 else 0.9
+        new_zoom = self.current_zoom * zoom_factor
+        new_zoom = max(self.min_zoom, min(self.max_zoom, new_zoom))
+
+        if new_zoom == self.current_zoom:
+            return
+
+        # Координаты курсора относительно холста
+        mouse_x, mouse_y = self.last_mouse_pos
+
+        # Коэффициент изменения масштаба
+        zoom_change = new_zoom / self.current_zoom
+
+        # Применяем трансформацию к холсту
+        self.card_canvas.scale("all",
+                               mouse_x, mouse_y,
+                               zoom_change, zoom_change)
+
+        self.current_zoom = new_zoom
+
+        # Обновляем информацию о масштабе
+        group = self.groups[self.card_listbox.curselection()[0]]
+        self.update_info_panel(group,
+                               self.card_listbox.curselection()[0],
+                               self.get_current_scale(group))
+
+    def _on_canvas_resize(self, event):
+        """Обновляет отображение при изменении размера холста"""
+        if (hasattr(self, 'groups') and self.groups and
+                hasattr(self, 'card_listbox') and self.card_listbox.curselection()):
+            selected = self.card_listbox.curselection()
+            if selected:
+                self.display_cutting_plan(selected[0])
+
+    def update_orders_list(self):
+        """Обновляет список заказов из базы данных, исключая завершенные"""
+        self.order_listbox.delete(0, tk.END)  # Очищаем текущий список
+
+        # Получаем заказы, исключая завершенные
+        orders = get_production_orders()
+
+        if not orders:
+            return
+
+        for order in orders:
+            order_id = order[0]
+            status = order[-1]
+
+            # Пропускаем завершенные заказы
+            if status.lower() == "завершен":
+                continue
+
+            windows = get_windows_for_production_order(order_id)
+
+            for window in windows:
+                window_id, window_type, width, height, quantity = window
+                for _ in range(quantity):
+                    order_text = f"Заказ {order_id}: {width}x{height} ({window_type})"
+                    self.order_listbox.insert(tk.END, order_text)
+
+    def load_orders_from_db(self):
+        """Алиас для update_orders_list для обратной совместимости"""
+        self.update_orders_list()
 
     def on_close(self):
         """Обработчик закрытия окна"""
@@ -506,11 +601,19 @@ class GlassCuttingTab(CTkFrame):
             print(f"Ошибка при выборе заказа: {e}")
 
     def get_current_scale(self, group):
-        """Возвращает текущий масштаб отображения"""
-        return min(
-            self.card_canvas.winfo_width() / group['width'],
-            self.card_canvas.winfo_height() / group['height']
-        )
+        """Возвращает текущий масштаб отображения с учетом зума"""
+        canvas_width = self.card_canvas.winfo_width()
+        canvas_height = self.card_canvas.winfo_height()
+
+        # Базовый масштаб (как раньше)
+        base_scale = min(canvas_width / group['width'],
+                         canvas_height / group['height'])
+
+        # Применяем текущий масштаб
+        scale = base_scale * self.current_zoom
+
+        # Ограничиваем, чтобы не был меньше базового
+        return max(base_scale, scale)
 
     def load_orders_from_db(self):
         """Загружает стеклопакеты из production orders с сохранением типа"""
@@ -687,13 +790,22 @@ class GlassCuttingTab(CTkFrame):
 
     def _prepare_items(self, type_orders):
         """Подготавливает элементы для обработки"""
-        return [{
-            'id': f"{o['order_id']}-{o['window_id']}",
-            'width': o['width'],
-            'height': o['height'],
-            'type': o['type'],
-            'original': o
-        } for o in type_orders]
+        items = []
+        # Создаем счетчик для каждого заказа
+        order_counters = defaultdict(int)
+
+        for o in type_orders:
+            order_id = o['order_id']
+            order_counters[order_id] += 1
+            items.append({
+                'id': f"{order_id}-{order_counters[order_id]}",  # Формат "order_id-sequence"
+                'width': o['width'],
+                'height': o['height'],
+                'type': o['type'],
+                'original': o
+            })
+
+        return items
 
     def _create_new_sheet(self, window_type):
         """Создает новый лист для упаковки"""
@@ -1104,8 +1216,7 @@ class GlassCuttingTab(CTkFrame):
                                       rect.height != item['height']) else 0
 
                     packed_item = {
-                        'id': str(item.get('original', {}).get('order_id', '')) + "_" +
-                              str(item.get('original', {}).get('window_id', str(hash(item['id']))[:10])),
+                        'id': item['id'],
                         'x': rect.x,
                         'y': rect.y,
                         'width': rect.width,
@@ -1122,16 +1233,22 @@ class GlassCuttingTab(CTkFrame):
 
         return packed_items, area_used
 
-
     def _fetch_orders(self):
-        """Получение заказов из базы данных"""
+        """Получение незавершенных заказов из базы данных"""
         orders = []
         production_orders = get_production_orders()
+
         if not production_orders:
             return []
 
         for order in production_orders:
             order_id = order[0]
+            status = order[-1]  # Предполагаем, что статус находится во втором поле
+
+            # Пропускаем завершенные заказы
+            if status.lower() == "завершен":
+                continue
+
             windows = get_windows_for_production_order(order_id)
             for window in windows:
                 window_id, window_type, width, height, quantity = window
@@ -1320,32 +1437,28 @@ class GlassCuttingTab(CTkFrame):
         if self.groups:
             self.display_cutting_plan(0)
 
-
     def display_cutting_plan(self, index):
-        """Отображение карты раскроя с сеткой и неиспользованными областями"""
+        """Отображение с учетом текущего масштаба (без автоскейла)"""
         if not self.groups or index >= len(self.groups):
             return
 
         group = self.groups[index]
         self.card_canvas.delete("all")
 
-        # Масштабирование
+        # Базовый масштаб
         canvas_width = self.card_canvas.winfo_width()
         canvas_height = self.card_canvas.winfo_height()
-        scale = min(canvas_width / group['width'], canvas_height / group['height'])
+        base_scale = min(canvas_width / group['width'],
+                         canvas_height / group['height'])
 
-        # 1. Рисуем фон (красный горошек для всего листа)
-        self.card_canvas.create_rectangle(
-            0, 0,
-            group['width'] * scale,
-            group['height'] * scale,
-            fill="red", stipple="gray25", outline=""
-        )
+        # Текущий масштаб с ограничениями
+        scale = base_scale * self.current_zoom
 
-        # 2. Рисуем сетку с шагом 1000 мм
+        # Рисуем все элементы
+        self.draw_background(group, scale)
         self.draw_grid(group, scale)
 
-        # 3. Рисуем границы листа поверх сетки
+        # Границы листа
         self.card_canvas.create_rectangle(
             0, 0,
             group['width'] * scale,
@@ -1353,19 +1466,28 @@ class GlassCuttingTab(CTkFrame):
             outline="black", width=3
         )
 
-        # 4. Рисуем все элементы поверх всего
+        # Рисуем элементы
         for item in group['items']:
             self.draw_glass_item(item, scale)
 
-        # 5. Информационная панель
+        # Обновляем инфопанель
         self.update_info_panel(group, index, scale)
 
-        # Восстанавливаем выделение после перерисовки
+        # Восстанавливаем выделение
         if hasattr(self, 'selected_item') and self.selected_item:
             for item in group['items']:
                 if item['id'] == self.selected_item['id']:
                     self.select_item(item, scale)
                     break
+
+    def draw_background(self, group, scale):
+        """Рисует фон с учетом масштаба"""
+        self.card_canvas.create_rectangle(
+            0, 0,
+            group['width'] * scale,
+            group['height'] * scale,
+            fill="red", stipple="gray25", outline=""
+        )
 
     def draw_grid(self, group, scale):
         """Рисует сетку с шагом 1000 мм"""
@@ -1407,7 +1529,7 @@ class GlassCuttingTab(CTkFrame):
                 )
 
     def draw_glass_item(self, item, scale):
-        """Рисует одну заготовку с подписью"""
+        """Рисует одну заготовку с подписями размеров"""
         x1 = item['x'] * scale
         y1 = item['y'] * scale
         x2 = x1 + item['width'] * scale
@@ -1422,18 +1544,46 @@ class GlassCuttingTab(CTkFrame):
             outline="black", fill=color, width=1
         )
 
-        # Подпись (если элемент достаточно большой)
-        if (x2 - x1) > 60 and (y2 - y1) > 40:
-            text = f"{item['width']}×{item['height']}\nID:{item['id']}"
-            if item['rotation'] != 0:
-                text += f"\n(повернуто)"
+        # Определяем минимальный размер для отображения текста
+        min_size_for_text = 50 * scale  # Минимальный размер в пикселях для отображения текста
 
-            font_size = max(8, min(12, int(min(x2 - x1, y2 - y1) / 15)))
+        # Общий размер шрифта для обеих подписей
+        font_size = max(8, min(12, int(min((x2 - x1), (y2 - y1)) / 15)))
+
+        # Подпись длины (вдоль верхнего края)
+        if (x2 - x1) > min_size_for_text:
             self.card_canvas.create_text(
-                (x1 + x2) / 2, (y1 + y2) / 2,
-                text=text, font=("Arial", font_size),
-                fill="black"
+                (x1 + x2) / 2, y1 + 10 * scale,  # 10px от верхнего края
+                text=f"{item['width']} мм",
+                font=("Arial", font_size),
+                fill="black",
+                anchor="n"
             )
+
+        # Подпись ширины (вдоль левого края) - смещена правее и ниже
+        if (y2 - y1) > min_size_for_text:
+            self.card_canvas.create_text(
+                x1 + 25 * scale, (y1 + y2) / 2 + 15 * scale,  # 25px от левого края и 15px вниз от центра
+                text=f"{item['height']} мм",
+                font=("Arial", font_size),
+                fill="black",
+                anchor="w",
+                angle=90
+            )
+
+        # Подпись номера заказа и порядкового номера (если элемент достаточно большой)
+        if (x2 - x1) > 100 * scale and (y2 - y1) > 60 * scale:
+        # Получаем номер заказа и порядковый номер из ID
+            id_parts = item['id'].split('-')
+        order_num = id_parts[0] if len(id_parts) > 0 else "?"
+        seq_num = id_parts[1] if len(id_parts) > 1 else "?"
+
+        self.card_canvas.create_text(
+            (x1 + x2) / 2, (y1 + y2) / 2,
+            text=f"{order_num}-{seq_num}",  # Формат "номер заказа-порядковый номер"
+            font=("Arial", font_size),
+            fill="black"
+        )
 
     def update_info_panel(self, group, index, scale):
         """Обновляет информационную панель"""

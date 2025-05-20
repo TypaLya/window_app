@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 import xlrd
-from anyio import value
+# from anyio import value
 from customtkinter import CTkButton, CTkFrame
 
 from database import get_all_film_materials, add_film_material, add_component_material, get_all_component_materials, \
