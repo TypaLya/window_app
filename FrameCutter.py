@@ -1,19 +1,13 @@
 import tkinter as tk
-from tkinter import ttk
 
-
-from customtkinter import CTk, CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
+from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
 from tkinter import messagebox
 
-from Authorization import AuthWindow
-from GlassCutter import GlassCuttingTab
 from Item import NumberItem
 from GroupSolver import GroupSolver
-from ProductionPlanning import ProductionPlanningTab
 
-from database import (create_database, add_order_to_db, delete_order_from_db, update_order_in_db,
+from database import (add_order_to_db, delete_order_from_db, update_order_in_db,
                       get_all_orders_from_db)
-from warehouse import WarehouseTab
 
 
 class FrameCuttingTab(CTkFrame):
@@ -254,50 +248,3 @@ class FrameCuttingTab(CTkFrame):
         if selected_index:
             group = self.groups[selected_index[0]]
             self.draw_horizontal_cutting_plan(group)
-
-
-class CuttingOptimizer(CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Оптимизация раскроя заготовки")
-        self.geometry("1150x800")
-        self.withdraw()
-
-        # Создаем вкладки
-        self.tab_control = ttk.Notebook(self)
-
-        # Вкладка для раскроя рамки
-        self.frame_tab = FrameCuttingTab(self)
-        self.tab_control.add(self.frame_tab, text="Раскрой рамки")
-
-        # Вкладка для раскроя стекла
-        self.glass_tab = GlassCuttingTab(self)
-        self.tab_control.add(self.glass_tab, text="Раскрой стекла")
-
-        # Вкладка для планирования производства
-        self.planning_tab = ProductionPlanningTab(self)
-        self.tab_control.add(self.planning_tab, text="Планирование производства")
-
-        # Вкладка для планирования производства
-        self.warehouse_tab = WarehouseTab(self)
-        self.tab_control.add(self.warehouse_tab, text="Склад")
-
-        self.tab_control.pack(expand=1, fill="both")
-
-
-        # Привязываем обработчики событий
-        self.frame_tab.card_listbox.bind('<<ListboxSelect>>', self.frame_tab.display_card_details)
-        self.glass_tab.card_listbox.bind('<<ListboxSelect>>', self.glass_tab.display_card_details)
-
-    def on_orders_updated(self):
-        """Обновляем списки заказов в обеих вкладках"""
-        self.frame_tab.load_orders_from_db()
-        self.glass_tab.load_orders_from_db()
-
-
-if __name__ == "__main__":
-    create_database()
-    app = CuttingOptimizer()
-    auth_window = AuthWindow(app)
-
-    auth_window.mainloop()
