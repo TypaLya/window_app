@@ -9,7 +9,6 @@ from GroupSolver import GroupSolver
 from database import (add_order_to_db, delete_order_from_db, update_order_in_db,
                       get_all_orders_from_db)
 
-
 class FrameCuttingTab(CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
