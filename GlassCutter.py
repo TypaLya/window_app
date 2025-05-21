@@ -49,6 +49,8 @@ class GlassCuttingTab(CTkFrame):
         self.packing_cache = {}
         self.combination_cache = {}
 
+        self._selecting_order = False
+        self._selecting_card = False
         self.selected_item = None
         self.hover_item = None
         self.selection_rect = None
@@ -172,7 +174,14 @@ class GlassCuttingTab(CTkFrame):
         self.order_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.scrollbar.configure(command=self.order_listbox.yview)
 
+        # Контекстное меню
+        self.context_menu = tk.Menu(self.card_canvas, tearoff=0)
+        self.context_menu.add_command(label="Информация", command=self.show_context_info)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Повернуть", command=self.rotate_selected_item)
+
         # Привязка событий
+        self.card_canvas.bind("<Button-3>", self.on_right_click)
         self.card_canvas.bind("<MouseWheel>", self.on_vertical_scroll)
         self.card_canvas.bind("<Shift-MouseWheel>", self.on_horizontal_scroll)
         self.card_canvas.bind("<Control-MouseWheel>", self.on_mousewheel_zoom)
@@ -202,6 +211,41 @@ class GlassCuttingTab(CTkFrame):
             group = self.groups[self.card_listbox.curselection()[0]]
             self._center_cutting_plan(group)
             self.display_cutting_plan(self.card_listbox.curselection()[0])
+
+    def on_right_click(self, event):
+        """Обработчик правого клика для показа контекстного меню"""
+        if not self.groups or not self.card_listbox.curselection():
+            return
+
+        group = self.groups[self.card_listbox.curselection()[0]]
+        scale = self.get_current_scale(group)
+
+        # Координаты с учетом масштаба и смещения
+        real_x = (event.x - self.canvas_offset_x) / scale
+        real_y = (event.y - self.canvas_offset_y) / scale
+
+        # Ищем элемент под курсором
+        clicked_item = None
+        for item in group['items']:
+            if (item['x'] <= real_x <= item['x'] + item['width'] and
+                    item['y'] <= real_y <= item['y'] + item['height']):
+                clicked_item = item
+                break
+
+        # Сохраняем выбранный элемент для контекстного меню
+        self.context_item = clicked_item
+
+        if clicked_item:
+            # Выделяем элемент
+            self.select_item(clicked_item, scale)
+
+            # Показываем контекстное меню
+            try:
+                self.context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.context_menu.grab_release()
+        else:
+            self.clear_selection()
 
     def _center_cutting_plan(self, group):
         """Центрирование карты раскроя"""
@@ -667,7 +711,8 @@ class GlassCuttingTab(CTkFrame):
 
             if clicked_item:
                 self.select_item(clicked_item, scale)
-                self.select_order_in_list(clicked_item['id'])
+                self.card_canvas.focus_set()
+                self.highlight_order_in_list(clicked_item['id'])  # визуально подсвечиваем, не меняем selection
             else:
                 # Клик на пустом месте - просто сбрасываем выделение
                 self.clear_selection()
@@ -676,6 +721,42 @@ class GlassCuttingTab(CTkFrame):
             print(f"Ошибка при обработке клика: {e}")
             self.clear_selection()
 
+    def highlight_order_in_list(self, item_id):
+        """Подсвечивает заказ, соответствующий item['id'] и типу карты"""
+        # Сброс цветов
+        for i in range(self.order_listbox.size()):
+            self.order_listbox.itemconfig(i, bg="#333333", fg="white")
+
+        # Проверка формата ID
+        parts = item_id.split('-')
+        if len(parts) != 2:
+            return
+
+        target_order_id = parts[0]
+        target_sequence = int(parts[1])
+
+        # Получаем текущий тип карты раскроя
+        if not self.card_listbox.curselection():
+            return
+        group_index = self.card_listbox.curselection()[0]
+        group_type = self.groups[group_index]['type']
+
+        current_count = 0
+        for i in range(self.order_listbox.size()):
+            text = self.order_listbox.get(i)
+
+            # Проверяем совпадение по order_id и типу
+            if f"Заказ {target_order_id}:" in text and f"({group_type})" in text:
+                current_count += 1
+                if current_count == target_sequence:
+                    # Подсвечиваем строку
+                    self.order_listbox.itemconfig(i, bg="darkblue", fg="white")
+
+                    # Прокручиваем к ней
+                    self.order_listbox.see(i)
+
+                    # Не вызываем .activate(i) или .selection_set(i), чтобы не сбрасывать фокус с canvas
+                    break
     def canvas_to_real_coords(self, x, y):
         """Преобразует координаты холста в реальные координаты с учетом масштаба и смещения"""
         if not self.groups or not self.card_listbox.curselection():
@@ -708,23 +789,34 @@ class GlassCuttingTab(CTkFrame):
             self.card_canvas.delete(self.selection_rect)
         self.selection_rect = None
         self.selected_item = None
-        if hasattr(self, 'order_listbox'):
-            self.order_listbox.selection_clear(0, tk.END)
+
+        # Очищаем информацию о выбранном элементе
+        for widget in self.right_frame.winfo_children():
+            if widget != self.card_list_frame:
+                widget.destroy()
 
     def on_card_select(self, event):
-        """Обработчик выбора карты раскроя с центрированием"""
         if not self.card_listbox.curselection():
             return
 
-        # Сбрасываем масштаб и положение
-        self.current_zoom = 1.0
-        selected_index = self.card_listbox.curselection()[0]
+        if getattr(self, "_selecting_card", False):
+            return
 
-        if 0 <= selected_index < len(self.groups):
-            group = self.groups[selected_index]
-            self._center_cutting_plan(group)
-            self.display_cutting_plan(selected_index)
-            self.clear_selection()
+        self._selecting_card = True
+        try:
+            self.current_zoom = 1.0
+            selected_index = self.card_listbox.curselection()[0]
+
+            if 0 <= selected_index < len(self.groups):
+                group = self.groups[selected_index]
+                self._center_cutting_plan(group)
+                self.display_cutting_plan(selected_index)
+
+                # Очищаем выделение ТОЛЬКО если пользователь кликнул
+                if not getattr(self, "_selecting_order", False):
+                    self.clear_selection()
+        finally:
+            self._selecting_card = False
 
     def select_item(self, item, scale):
         """Выделяет элемент с защитой от ошибок"""
@@ -743,25 +835,116 @@ class GlassCuttingTab(CTkFrame):
             )
             self.card_canvas.tag_raise(self.selection_rect)
             self.selected_item = item
+            self.context_item = item  # Сохраняем для контекстного меню
         except Exception as e:
             print(f"Ошибка при выделении элемента: {e}")
 
+    def show_context_info(self):
+        """Показывает информацию о выбранном элементе в отдельном окне"""
+        if not hasattr(self, 'context_item') or not self.context_item:
+            return
+
+        item = self.context_item
+
+        # Создаем окно
+        info_window = tk.Toplevel(self)
+        info_window.title(f"Информация о элементе {item['id']}")
+        info_window.geometry("300x200")
+        info_window.resizable(False, False)
+
+        # Центрируем окно
+        window_width = info_window.winfo_reqwidth()
+        window_height = info_window.winfo_reqheight()
+        position_right = int(info_window.winfo_screenwidth() / 2 - window_width / 2)
+        position_down = int(info_window.winfo_screenheight() / 2 - window_height / 2)
+        info_window.geometry(f"+{position_right}+{position_down}")
+
+        # Добавляем информацию
+        info_frame = CTkFrame(info_window)
+        info_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+        info_text = (f"ID: {item['id']}\n\n"
+                     f"Размер: {item['width']}×{item['height']} мм\n\n"
+                     f"Позиция: X={item['x']} мм, Y={item['y']} мм\n\n"
+                     f"Поворот: {'90°' if item.get('rotation') else 'нет'}\n\n"
+                     f"Тип: {item.get('type', 'неизвестно')}")
+
+        CTkLabel(info_frame,
+                 text=info_text,
+                 justify="left",
+                 font=("Arial", 12)).pack(pady=10, padx=10)
+
+        # Кнопка закрытия
+        CTkButton(info_window,
+                  text="Закрыть",
+                  command=info_window.destroy).pack(pady=5)
+
+    def rotate_selected_item(self):
+        """Поворачивает выбранный элемент на 90 градусов"""
+        if not hasattr(self, 'context_item') or not self.context_item:
+            return
+
+        item = self.context_item
+        group_index = self.card_listbox.curselection()[0]
+        group = self.groups[group_index]
+
+        # Меняем ширину и высоту местами
+        new_width = item['height']
+        new_height = item['width']
+
+        # Проверяем, помещается ли повернутый элемент
+        if (item['x'] + new_width <= group['width'] and
+                item['y'] + new_height <= group['height']):
+
+            # Обновляем элемент
+            item['width'] = new_width
+            item['height'] = new_height
+            item['rotation'] = 90 if not item.get('rotation') else 0
+
+            # Перерисовываем карту
+            self.display_cutting_plan(group_index)
+
+            # Обновляем выделение
+            scale = self.get_current_scale(group)
+            self.select_item(item, scale)
+        else:
+            messagebox.showerror("Ошибка", "Недостаточно места для поворота элемента")
+
     def select_order_in_list(self, order_id):
-        """Выбирает заказ в списке с защитой от ошибок"""
         try:
-            # Очищаем текущее выделение
+            if getattr(self, "_selecting_order", False):
+                return
+
+            self._selecting_order = True
+
+            # Временно отключим обработчик выбора
+            self.order_listbox.unbind('<<ListboxSelect>>')
+
             self.order_listbox.selection_clear(0, tk.END)
 
-            # Ищем нужный заказ
+            parts = str(order_id).split('-')
+            if len(parts) < 2:
+                return
+
+            target_order_id = parts[0]
+            target_sequence = int(parts[1]) if len(parts) > 1 else 1
+
             for i in range(self.order_listbox.size()):
                 item_text = self.order_listbox.get(i)
-                if str(order_id) in item_text.split(':')[0]:  # Ищем в начале строки (ID заказа)
-                    self.order_listbox.selection_set(i)
-                    self.order_listbox.see(i)
-                    self.order_listbox.activate(i)  # Активируем элемент
+                if f"Заказ {target_order_id}:" in item_text:
+                    selected_index = i + target_sequence - 1
+                    if selected_index < self.order_listbox.size():
+                        self.order_listbox.selection_set(selected_index)
+                        self.order_listbox.see(selected_index)
+                        self.order_listbox.activate(selected_index)
                     break
+
         except Exception as e:
             print(f"Ошибка при выборе заказа: {e}")
+        finally:
+            # Возвращаем обработчик
+            self.order_listbox.bind('<<ListboxSelect>>', self.on_card_select)
+            self._selecting_order = False
 
     def get_current_scale(self, group):
         """Возвращает текущий масштаб отображения с учетом зума"""
@@ -1166,30 +1349,31 @@ class GlassCuttingTab(CTkFrame):
 
     def _print_final_statistics(self):
         """Выводит итоговую статистику после оптимизации"""
-        print("\n" + "=" * 50)
-        print("ИТОГОВАЯ СТАТИСТИКА")
-        print("=" * 50)
-
-        total_sheets = len(self.groups)
-        total_used_area = sum(g['used_area'] for g in self.groups)
-        total_wasted_area = sum(g['wasted_area'] for g in self.groups)
-        try:
-            avg_fill = (total_used_area / (total_sheets * self.sheet_width * self.sheet_height)) * 100
-        except ZeroDivisionError:
-            avg_fill = 0
-
-        print(f"\nВсего карт раскроя: {total_sheets}")
-        print(f"Среднее заполнение: {avg_fill:.1f}%")
-        print(f"Общая использованная площадь: {total_used_area / 1e6:.2f} м²")
-        print(f"Общие отходы: {total_wasted_area / 1e6:.2f} м²")
-
-        for window_type, items in self.unused_elements.items():
-            if items:
-                print(f"\nНе упаковано элементов типа {window_type}: {len(items)}")
-                for item in items[:3]:
-                    print(f" - {item['id']}: {item['width']}x{item['height']} мм")
-                if len(items) > 3:
-                    print(f" - ...и еще {len(items) - 3} элементов")
+        pass
+        # print("\n" + "=" * 50)
+        # print("ИТОГОВАЯ СТАТИСТИКА")
+        # print("=" * 50)
+        #
+        # total_sheets = len(self.groups)
+        # total_used_area = sum(g['used_area'] for g in self.groups)
+        # total_wasted_area = sum(g['wasted_area'] for g in self.groups)
+        # try:
+        #     avg_fill = (total_used_area / (total_sheets * self.sheet_width * self.sheet_height)) * 100
+        # except ZeroDivisionError:
+        #     avg_fill = 0
+        #
+        # print(f"\nВсего карт раскроя: {total_sheets}")
+        # print(f"Среднее заполнение: {avg_fill:.1f}%")
+        # print(f"Общая использованная площадь: {total_used_area / 1e6:.2f} м²")
+        # print(f"Общие отходы: {total_wasted_area / 1e6:.2f} м²")
+        #
+        # for window_type, items in self.unused_elements.items():
+        #     if items:
+        #         print(f"\nНе упаковано элементов типа {window_type}: {len(items)}")
+        #         for item in items[:3]:
+        #             print(f" - {item['id']}: {item['width']}x{item['height']} мм")
+        #         if len(items) > 3:
+        #             print(f" - ...и еще {len(items) - 3} элементов")
 
     def _print_unused_elements(self, unused_elements):
         """Выводит информацию о неиспользованных элементах"""
@@ -1271,57 +1455,6 @@ class GlassCuttingTab(CTkFrame):
             'used_area': used_area,
             'wasted_area': (self.sheet_width * self.sheet_height) - used_area
         })
-
-    def _try_add_remaining_items_deep(self, current_sheet, remaining_items, window_type, sheet_area, sort_algo,
-                                      pack_algo):
-        """Дополнительная попытка добавить элементы в глубоком режиме оптимизации"""
-        added_count = 0
-        temp_remaining = remaining_items.copy()
-
-        for item in temp_remaining:
-            # Пробуем несколько вариантов размещения
-            for rotation in [0, 90]:  # Пробуем оба варианта поворота
-                width = item['width'] if rotation == 0 else item['height']
-                height = item['height'] if rotation == 0 else item['width']
-
-                test_items = current_sheet['items'] + [{
-                    **item,
-                    'width': width,
-                    'height': height,
-                    'rotation': rotation
-                }]
-
-                cache_key = self._create_cache_key(test_items)
-
-                if cache_key in self.packing_cache:
-                    packed, used_area = self.packing_cache[cache_key]
-                else:
-                    packed, used_area = self._pack_items_safe(
-                        test_items,
-                        sort_algo=sort_algo,
-                        pack_algo=pack_algo
-                    )
-                    with self.lock:
-                        self.packing_cache[cache_key] = (packed, used_area)
-
-                if len(packed) == len(test_items) and used_area <= sheet_area:
-                    current_sheet['items'] = packed
-                    current_sheet['used_area'] = used_area
-                    remaining_items.remove(item)
-                    added_count += 1
-                    print(f"[Глубокий режим] Добавлен элемент {item['id']} с поворотом {rotation}°")
-                    break  # Переходим к следующему элементу
-
-        if added_count > 0:
-            with self.lock:
-                self.groups[-1].update({
-                    'items': current_sheet['items'],
-                    'used_area': current_sheet['used_area'],
-                    'wasted_area': sheet_area - current_sheet['used_area'],
-                    'fill_percentage': (current_sheet['used_area'] / sheet_area) * 100
-                })
-
-        return added_count
 
     def pack_items(self, items, sort_algo=rectpack.SORT_AREA, pack_algo=rectpack.MaxRectsBssf):
         """Упаковка элементов с настраиваемыми параметрами"""
@@ -1710,12 +1843,6 @@ class GlassCuttingTab(CTkFrame):
                  f"Масштаб: 1:{int(1 / scale)} | "
                  f"Сетка: 1000 мм"
         )
-
-    # def calculate_utilization(self, group):
-    #     """Вычисляет процент использования листа"""
-    #     used_area = sum(item['width'] * item['height'] for item in group['items'])
-    #     total_area = group['width'] * group['height']
-    #     return round(used_area / total_area * 100, 1)
 
     def display_card_details(self, event):
         selected_index = self.card_listbox.curselection()
