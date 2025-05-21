@@ -1,8 +1,9 @@
 import hashlib
+
 import time
 import tkinter as tk
 import rectpack
-from tkinter import ttk
+from tkinter import ttk, filedialog
 from typing import Dict, List, Tuple
 
 from functools import lru_cache
@@ -147,6 +148,23 @@ class GlassCuttingTab(CTkFrame):
         # Правый фрейм для результатов
         self.right_frame = CTkFrame(self.main_paned, width=self.side_panels_width)
         self.main_paned.add(self.right_frame, minsize=150)
+
+        # Добавим кнопки импорта/экспорта
+        self.export_btn = CTkButton(
+            self.right_frame,
+            text="Экспорт DXF",
+            command=self.export_to_dxf,
+            width=100
+        )
+        self.export_btn.pack(pady=(10, 5), padx=10, anchor='n')
+
+        self.import_btn = CTkButton(
+            self.right_frame,
+            text="Импорт DXF",
+            command=self.import_from_dxf,
+            width=100
+        )
+        self.import_btn.pack(pady=(0, 10), padx=10, anchor='n')
 
         # Разделитель для правой панели
         # self.right_separator = ttk.Separator(self, orient="vertical")
@@ -1834,3 +1852,225 @@ class GlassCuttingTab(CTkFrame):
         selected_index = self.card_listbox.curselection()
         if selected_index:
             self.display_cutting_plan(selected_index[0])
+
+    def export_to_dxf(self):
+        """Надежный экспорт карты раскроя в DXF"""
+        try:
+            # Проверка наличия данных для экспорта
+            if not hasattr(self, 'groups') or not self.groups:
+                messagebox.showwarning("Ошибка", "Нет данных для экспорта")
+                return
+
+            if not self.card_listbox.curselection():
+                messagebox.showwarning("Ошибка", "Не выбрана карта раскроя")
+                return
+
+            try:
+                import ezdxf
+                from ezdxf.math import Vec2
+            except ImportError:
+                messagebox.showerror("Ошибка",
+                                     "Библиотека ezdxf не установлена.\n"
+                                     "Установите через: pip install ezdxf")
+                return
+
+            # Получаем текущую группу
+            group_index = self.card_listbox.curselection()[0]
+            group = self.groups[group_index]
+
+            # Диалог сохранения файла
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".dxf",
+                filetypes=[("DXF файлы", "*.dxf")],
+                title="Сохранить карту раскроя"
+            )
+            if not file_path:
+                return
+
+            # Создаем простой DXF документ
+            try:
+                doc = ezdxf.new('R2010')
+                doc.header['$INSUNITS'] = 4  # Миллиметры
+                msp = doc.modelspace()
+
+                # 1. Граница листа (прямоугольник)
+                sheet_points = [
+                    Vec2(0, 0),
+                    Vec2(group['width'], 0),
+                    Vec2(group['width'], group['height']),
+                    Vec2(0, group['height']),
+                    Vec2(0, 0)  # Замыкаем
+                ]
+                msp.add_lwpolyline(sheet_points, dxfattribs={
+                    'layer': 'SHEET',
+                    'color': 1
+                })
+
+                # 2. Элементы раскроя
+                for item in group['items']:
+                    # Координаты элемента
+                    x, y = item['x'], item['y']
+                    width, height = item['width'], item['height']
+
+                    # Полилиния элемента
+                    points = [
+                        Vec2(x, y),
+                        Vec2(x + width, y),
+                        Vec2(x + width, y + height),
+                        Vec2(x, y + height),
+                        Vec2(x, y)  # Замыкаем
+                    ]
+
+                    msp.add_lwpolyline(points, dxfattribs={
+                        'layer': 'GLASS',
+                        'color': 3 if item.get('rotation') else 2
+                    })
+
+                    # Простой текст по центру
+                    text = msp.add_text(
+                        f"{item['id']}",
+                        dxfattribs={
+                            'layer': 'TEXT',
+                            'height': min(width, height) / 4,
+                            'color': 0
+                        }
+                    )
+                    text.dxf.insert = Vec2(x + width / 2, y + height / 2)
+                    text.dxf.halign = 1  # Центр по горизонтали
+                    text.dxf.valign = 3  # Середина по вертикали
+
+                # Сохраняем файл
+                doc.saveas(file_path)
+                messagebox.showinfo("Успех", f"Файл успешно сохранен:\n{file_path}")
+
+            except Exception as e:
+                messagebox.showerror("Ошибка экспорта",
+                                     f"Не удалось сохранить DXF:\n{str(e)}\n"
+                                     f"Тип ошибки: {type(e).__name__}")
+
+        except Exception as e:
+            messagebox.showerror("Критическая ошибка",
+                                 f"Непредвиденная ошибка:\n{str(e)}\n"
+                                 f"Тип ошибки: {type(e).__name__}")
+
+    def import_from_dxf(self):
+        """Импорт карты раскроя с улучшенным распознаванием элементов"""
+        try:
+            import ezdxf
+            from ezdxf.math import Vec2, BoundingBox
+        except ImportError:
+            messagebox.showerror("Ошибка", "Модуль ezdxf не установлен. Установите его через: pip install ezdxf")
+            return
+
+        file_path = filedialog.askopenfilename(
+            filetypes=[("DXF файлы", "*.dxf"), ("Все файлы", "*.*")],
+            title="Выберите файл DXF"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            doc = ezdxf.readfile(file_path)
+            msp = doc.modelspace()
+
+            # 1. Определяем границы листа
+            bbox = BoundingBox()
+            for entity in msp:
+                try:
+                    bbox.extend(entity.bbox())
+                except:
+                    continue
+
+            sheet_width = bbox.size.x if bbox.has_data else 6000
+            sheet_height = bbox.size.y if bbox.has_data else 6000
+
+            # 2. Собираем элементы
+            items = []
+            text_map = {}
+
+            # Сначала собираем все текстовые элементы
+            for text in msp.query('TEXT'):
+                text_map[(text.dxf.insert.x, text.dxf.insert.y)] = text.dxf.text
+
+            # Затем обрабатываем полилинии
+            for poly in msp.query('LWPOLYLINE'):
+                if poly.closed and len(poly) in [4, 5]:
+                    points = list(poly.vertices())
+                    x_coords = [p[0] for p in points]
+                    y_coords = [p[1] for p in points]
+
+                    x = min(x_coords)
+                    y = min(y_coords)
+                    width = max(x_coords) - x
+                    height = max(y_coords) - y
+
+                    # Пропускаем границу листа
+                    if abs(width - sheet_width) < 1 and abs(height - sheet_height) < 1:
+                        continue
+
+                    # Ищем текст внутри элемента
+                    center = Vec2(x + width / 2, y + height / 2)
+                    item_id = f"imported_{len(items) + 1}"
+                    size_info = ""
+
+                    # Проверяем центр и все углы
+                    for check_pos in [
+                        center,
+                        Vec2(x + width * 0.2, y + height * 0.2),
+                        Vec2(x + width * 0.8, y + height * 0.8)
+                    ]:
+                        for text_pos, text_content in text_map.items():
+                            if (x <= text_pos[0] <= x + width and
+                                    y <= text_pos[1] <= y + height):
+                                item_id = text_content.split('|')[0]
+                                if 'x' in text_content:
+                                    size_info = text_content.split('|')[-1]
+                                break
+
+                    # Определяем поворот
+                    rotation = 0
+                    if size_info:
+                        orig_w, orig_h = map(float, size_info.split('x'))
+                        if abs(width - orig_h) < 1 and abs(height - orig_w) < 1:
+                            rotation = 90
+
+                    items.append({
+                        'id': item_id,
+                        'x': x,
+                        'y': y,
+                        'width': width,
+                        'height': height,
+                        'rotation': rotation,
+                        'type': 'imported'
+                    })
+
+            if not items:
+                messagebox.showwarning("Предупреждение",
+                                       "Не найдено элементов. Проверьте что:\n"
+                                       "1. Элементы - замкнутые полилинии (4 точки)\n"
+                                       "2. Текст с ID расположен внутри элементов\n"
+                                       "3. Файл соответствует экспортированному формату")
+                return
+
+            # 3. Создаем группу
+            new_group = {
+                'width': sheet_width,
+                'height': sheet_height,
+                'items': items,
+                'type': 'imported',
+                'used_area': sum(i['width'] * i['height'] for i in items),
+                'wasted_area': sheet_width * sheet_height - sum(i['width'] * i['height'] for i in items),
+                'fill_percentage': (sum(i['width'] * i['height'] for i in items) / (sheet_width * sheet_height) * 100)
+            }
+
+            self.groups.append(new_group)
+            self.update_interface()
+            self.card_listbox.selection_clear(0, tk.END)
+            self.card_listbox.selection_set(len(self.groups) - 1)
+            self.display_cutting_plan(len(self.groups) - 1)
+
+            messagebox.showinfo("Успех", f"Импортировано {len(items)} элементов")
+
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось импортировать DXF:\n{str(e)}")
