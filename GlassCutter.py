@@ -37,6 +37,10 @@ class GlassCuttingTab(CTkFrame):
         self.canvas_offset_y = 0
         self.last_mouse_pos = (0, 0)  # Для запоминания позиции курсора
 
+        # Настройки прокрутки
+        self.scroll_step = 50  # Количество страниц за прокрутку
+        self.scroll_margin = 200  # Отступ для границ прокрутки (в пикселях)
+
         self.optimization_mode = "normal"  # "normal" или "deep"
         self._is_running = True
         self._gui_update_queue = []
@@ -169,6 +173,8 @@ class GlassCuttingTab(CTkFrame):
         self.scrollbar.configure(command=self.order_listbox.yview)
 
         # Привязка событий
+        self.card_canvas.bind("<MouseWheel>", self.on_vertical_scroll)
+        self.card_canvas.bind("<Shift-MouseWheel>", self.on_horizontal_scroll)
         self.card_canvas.bind("<Control-MouseWheel>", self.on_mousewheel_zoom)
         self.card_canvas.bind("<ButtonPress-2>", self.reset_view)  # Для сброса масштаба
         self.card_canvas.bind("<Motion>", self.store_mouse_position)
@@ -198,14 +204,13 @@ class GlassCuttingTab(CTkFrame):
             self.display_cutting_plan(self.card_listbox.curselection()[0])
 
     def _center_cutting_plan(self, group):
-        """Центрирует карту раскроя на холсте"""
+        """Центрирование карты раскроя"""
         canvas_width = self.card_canvas.winfo_width()
         canvas_height = self.card_canvas.winfo_height()
         scale = self.get_current_scale(group)
 
-        # Вычисляем смещение для центрирования
-        self.canvas_offset_x = (canvas_width - group['width'] * scale) / 2
-        self.canvas_offset_y = (canvas_height - group['height'] * scale) / 2
+        self.canvas_offset_x = max((canvas_width - group['width'] * scale) / 2, 0)
+        self.canvas_offset_y = max((canvas_height - group['height'] * scale) / 2, 0)
 
     def on_mousewheel_zoom(self, event):
         """Масштабирование с центром в позиции курсора"""
@@ -252,54 +257,100 @@ class GlassCuttingTab(CTkFrame):
                     self.select_item(item, new_scale)
                     break
 
-    def display_cutting_plan(self, index):
-        """Отображение с учетом текущего масштаба и смещения"""
-        if not self.groups or index >= len(self.groups):
+    def on_vertical_scroll(self, event):
+        """Прокрутка по вертикали с плавностью и учетом масштаба"""
+        if not self.groups or not self.card_listbox.curselection():
             return
 
-        group = self.groups[index]
-        self.card_canvas.delete("all")
+        # Более плавная прокрутка с учетом масштаба
+        delta = -event.delta if event.delta > 0 else abs(event.delta)
+        scroll_step = max(10, int(50 * (1 / self.current_zoom)))
+        self.canvas_offset_y += delta * scroll_step / 120  # Нормализация для разных устройств
 
-        # Рассчитываем текущий масштаб
+        # Ограничение прокрутки
+        self._constrain_scroll()
+        self.display_cutting_plan(self.card_listbox.curselection()[0])
+
+    def on_horizontal_scroll(self, event):
+        """Прокрутка по горизонтали с плавностью и учетом масштаба"""
+        if not self.groups or not self.card_listbox.curselection():
+            return
+
+        delta = -event.delta if event.delta > 0 else abs(event.delta)
+        scroll_step = max(10, int(50 * (1 / self.current_zoom)))
+        self.canvas_offset_x += delta * scroll_step / 120
+
+        self._constrain_scroll()
+        self.display_cutting_plan(self.card_listbox.curselection()[0])
+
+    def _constrain_scroll(self):
+        """Ограничивает прокрутку в пределах допустимых значений"""
+        if not self.groups or not self.card_listbox.curselection():
+            return
+
+        group = self.groups[self.card_listbox.curselection()[0]]
         scale = self.get_current_scale(group)
+        canvas_width = self.card_canvas.winfo_width()
+        canvas_height = self.card_canvas.winfo_height()
 
-        # Если смещение не задано (первый запуск) - центрируем
-        if not hasattr(self, 'canvas_offset_x') or self.canvas_offset_x == 0:
-            self._center_cutting_plan(group)
+        max_x = max(group['width'] * scale - canvas_width, 0)
+        max_y = max(group['height'] * scale - canvas_height, 0)
 
-        # Рисуем все элементы с учетом масштаба и смещения
-        self.draw_background(group, scale)
-        self.draw_grid(group, scale)
+        self.canvas_offset_x = max(-self.scroll_margin, min(self.canvas_offset_x, max_x + self.scroll_margin))
+        self.canvas_offset_y = max(-self.scroll_margin, min(self.canvas_offset_y, max_y + self.scroll_margin))
 
-        # Границы листа
-        self.card_canvas.create_rectangle(
-            self.canvas_offset_x, self.canvas_offset_y,
-            self.canvas_offset_x + group['width'] * scale,
-            self.canvas_offset_y + group['height'] * scale,
-            outline="black", width=3
-        )
+    def display_cutting_plan(self, index):
+        """Отображение карты раскроя с защитой от ошибок"""
+        try:
+            if not self.groups or index >= len(self.groups):
+                return
 
-        # Рисуем элементы
-        for item in group['items']:
-            self.draw_glass_item(item, scale)
+            group = self.groups[index]
+            self.card_canvas.delete("all")
 
-        # Обновляем инфопанель
-        self.update_info_panel(group, index, scale)
+            scale = self.get_current_scale(group)
 
-        # Восстанавливаем выделение
-        if hasattr(self, 'selected_item') and self.selected_item:
+            # Ограничиваем прокрутку перед отрисовкой
+            self._constrain_scroll()
+
+            # Рисуем элементы
+            self.draw_background(group, scale)
+            self.draw_grid(group, scale)
+
+            # Границы листа
+            self.card_canvas.create_rectangle(
+                self.canvas_offset_x, self.canvas_offset_y,
+                self.canvas_offset_x + group['width'] * scale,
+                self.canvas_offset_y + group['height'] * scale,
+                outline="black", width=3
+            )
+
             for item in group['items']:
-                if item['id'] == self.selected_item['id']:
-                    self.select_item(item, scale)
-                    break
+                self.draw_glass_item(item, scale)
+
+            self.update_info_panel(group, index, scale)
+
+            # Восстанавливаем выделение если нужно
+            if hasattr(self, 'selected_item') and self.selected_item:
+                for item in group['items']:
+                    if item['id'] == self.selected_item['id']:
+                        self.select_item(item, scale)
+                        break
+
+        except Exception as e:
+            print(f"Ошибка при отображении карты раскроя: {e}")
 
     def _on_canvas_resize(self, event):
-        """Обновляет отображение при изменении размера холста"""
-        if (hasattr(self, 'groups') and self.groups and
-                hasattr(self, 'card_listbox') and self.card_listbox.curselection()):
-            selected = self.card_listbox.curselection()
-            if selected:
-                self.display_cutting_plan(selected[0])
+        """Обработчик изменения размера с защитой"""
+        try:
+            if (hasattr(self, 'groups') and self.groups and
+                    hasattr(self, 'card_listbox') and self.card_listbox.curselection()):
+                selected = self.card_listbox.curselection()
+                if selected:
+                    self._constrain_scroll()  # Обновляем границы прокрутки
+                    self.display_cutting_plan(selected[0])
+        except Exception as e:
+            print(f"Ошибка при изменении размера: {e}")
 
     def update_orders_list(self):
         """Обновляет список заказов из базы данных, исключая завершенные"""
@@ -591,38 +642,38 @@ class GlassCuttingTab(CTkFrame):
         self.hover_item = None
 
     def on_canvas_click(self, event):
-        """Обработчик клика с учетом масштаба и смещения"""
+        """Обработчик клика с защитой от поломки прокрутки"""
         try:
             if not self.groups or not self.card_listbox.curselection():
                 return
 
+            # Сбрасываем выделение перед новым выбором
+            self.clear_selection()
+
             group = self.groups[self.card_listbox.curselection()[0]]
             scale = self.get_current_scale(group)
 
-            # Преобразуем координаты клика с учетом текущего масштаба и смещения
-            real_x = (self.card_canvas.canvasx(event.x) - self.canvas_offset_x) / scale
-            real_y = (self.card_canvas.canvasy(event.y) - self.canvas_offset_y) / scale
+            # Координаты с учетом масштаба и смещения
+            real_x = (event.x - self.canvas_offset_x) / scale
+            real_y = (event.y - self.canvas_offset_y) / scale
 
-            self.clear_selection()
-
+            # Ищем элемент под курсором
             clicked_item = None
             for item in group['items']:
-                x1 = item['x']
-                y1 = item['y']
-                x2 = x1 + item['width']
-                y2 = y1 + item['height']
-
-                if x1 <= real_x <= x2 and y1 <= real_y <= y2:
+                if (item['x'] <= real_x <= item['x'] + item['width'] and
+                        item['y'] <= real_y <= item['y'] + item['height']):
                     clicked_item = item
                     break
 
             if clicked_item:
-                self.create_selection_rect(clicked_item, scale)
-                self.selected_item = clicked_item
+                self.select_item(clicked_item, scale)
                 self.select_order_in_list(clicked_item['id'])
+            else:
+                # Клик на пустом месте - просто сбрасываем выделение
+                self.clear_selection()
 
         except Exception as e:
-            print(f"Ошибка при клике: {e}")
+            print(f"Ошибка при обработке клика: {e}")
             self.clear_selection()
 
     def canvas_to_real_coords(self, x, y):
@@ -676,22 +727,24 @@ class GlassCuttingTab(CTkFrame):
             self.clear_selection()
 
     def select_item(self, item, scale):
-        """Выделяет указанную заготовку (без предварительной очистки)"""
-        x1 = self.canvas_offset_x + item['x'] * scale
-        y1 = self.canvas_offset_y + item['y'] * scale
-        x2 = x1 + item['width'] * scale
-        y2 = y1 + item['height'] * scale
+        """Выделяет элемент с защитой от ошибок"""
+        try:
+            if hasattr(self, 'selection_rect') and self.selection_rect:
+                self.card_canvas.delete(self.selection_rect)
 
-        # Удаляем старое выделение, если есть
-        if hasattr(self, 'selection_rect') and self.selection_rect:
-            self.card_canvas.delete(self.selection_rect)
+            x1 = self.canvas_offset_x + item['x'] * scale
+            y1 = self.canvas_offset_y + item['y'] * scale
+            x2 = x1 + item['width'] * scale
+            y2 = y1 + item['height'] * scale
 
-        self.selection_rect = self.card_canvas.create_rectangle(
-            x1, y1, x2, y2,
-            outline="#00FF00", width=3, tags="selection"
-        )
-        self.card_canvas.tag_raise(self.selection_rect)
-        self.selected_item = item
+            self.selection_rect = self.card_canvas.create_rectangle(
+                x1, y1, x2, y2,
+                outline="#00FF00", width=3, tags="selection"
+            )
+            self.card_canvas.tag_raise(self.selection_rect)
+            self.selected_item = item
+        except Exception as e:
+            print(f"Ошибка при выделении элемента: {e}")
 
     def select_order_in_list(self, order_id):
         """Выбирает заказ в списке с защитой от ошибок"""
