@@ -106,12 +106,13 @@ class GlassCuttingTab(CTkFrame):
         # Выбор режима оптимизации
         self.optimization_combobox = CTkComboBox(
             self.optimization_control_frame,
-            values=["Быстрый (по умолчанию)", "Глубокий перебор"],
+            values=["Быстрый", "Комбинированный (по умолчанию)", "Глубокий перебор"],
             command=self.set_optimization_mode,
             width=180
         )
+
         self.optimization_combobox.pack(side=tk.LEFT)
-        self.optimization_combobox.set("Быстрый (по умолчанию)")
+        self.optimization_combobox.set("Комбинированный (по умолчанию)")
 
         # Добавляем поле для порога заполненности
         self.threshold_frame = CTkFrame(self.optimization_control_frame)
@@ -466,7 +467,12 @@ class GlassCuttingTab(CTkFrame):
 
     def set_optimization_mode(self, choice):
         """Устанавливает режим оптимизации"""
-        self.optimization_mode = "deep" if "Глубокий" in choice else "normal"
+        if "Быстрый" == choice:
+            self.optimization_mode = "fast"
+        elif "Глубокий" in choice:
+            self.optimization_mode = "deep"
+        else:
+            self.optimization_mode = "normal"
 
     def resize_left_panel(self, event):
         """Изменяет ширину левой панели"""
@@ -1144,15 +1150,26 @@ class GlassCuttingTab(CTkFrame):
                 'max_workers': 2,
                 'sort_algo': rectpack.SORT_SSIDE,
                 'pack_algo': rectpack.MaxRectsBaf,
-                'attempts_per_item': 3
+                'attempts_per_item': 3,
+                'method': 'rectpack'
             }
-        else:
+        elif self.optimization_mode == "fast":
+            return {
+                'min_fill_ratio': 0.85,
+                'max_workers': 4,
+                'sort_algo': None,
+                'pack_algo': None,
+                'attempts_per_item': 1,
+                'method': 'best_fit'
+            }
+        else:  # normal
             return {
                 'min_fill_ratio': 0.90,
                 'max_workers': 4,
                 'sort_algo': rectpack.SORT_AREA,
                 'pack_algo': rectpack.MaxRectsBssf,
-                'attempts_per_item': 1
+                'attempts_per_item': 1,
+                'method': 'rectpack'
             }
 
     def _prepare_items(self, type_orders):
@@ -1184,6 +1201,19 @@ class GlassCuttingTab(CTkFrame):
 
     def _fill_sheet(self, current_sheet, remaining_items, sheet_area, params):
         """Заполняет лист элементами"""
+        if params['method'] == 'best_fit':
+            # Используем быстрый алгоритм для всей группы сразу
+            sheets = self.best_fit_decreasing_algorithm(remaining_items)
+            if sheets:
+                current_sheet['items'] = sheets[0]['items']
+                current_sheet['used_area'] = sum(
+                    i['width'] * i['height'] for i in sheets[0]['items'])
+                # Удаляем упакованные элементы
+                packed_ids = {item['id'] for item in sheets[0]['items']}
+                remaining_items[:] = [
+                    item for item in remaining_items if item['id'] not in packed_ids]
+            return
+
         while (current_sheet['used_area'] / sheet_area < params['min_fill_ratio'] and
                remaining_items and self._is_running):
 
@@ -1617,127 +1647,59 @@ class GlassCuttingTab(CTkFrame):
 
         return self.pack_items(unique_items)
 
+    def best_fit_decreasing_algorithm(self, items: List[Dict]) -> List[Dict]:
+        """Алгоритм с использованием rectpack для оптимального раскроя"""
+        packer = rectpack.newPacker(
+            rotation=True,  # Разрешаем поворот
+            sort_algo=rectpack.SORT_AREA,  # Сортировка по площади
+            pack_algo=rectpack.MaxRectsBssf,  # Один из лучших алгоритмов (Best Short Side Fit)
+            bin_algo=rectpack.PackingBin.BBF,  # Best Bin Fit
+        )
 
-    # def best_fit_decreasing_algorithm(self, items: List[Dict]) -> List[Dict]:
-    #     """Алгоритм с использованием rectpack для оптимального раскроя"""
-    #
-    #     packer = rectpack.newPacker(
-    #         rotation=True,  # Разрешаем поворот
-    #         sort_algo=rectpack.SORT_AREA,  # Сортировка по площади
-    #         pack_algo=rectpack.MaxRectsBssf,  # Один из лучших алгоритмов (Best Short Side Fit)
-    #         bin_algo=rectpack.PackingBin.BBF,  # Best Bin Fit
-    #     )
-    #
-    #     # Добавляем прямоугольники (width, height, id)
-    #     for item in items:
-    #         packer.add_rect(item['width'], item['height'], item['id'])
-    #
-    #     # Добавляем "бин" (лист стекла)
-    #     sheet_size = (self.sheet_width, self.sheet_height)
-    #     max_bins = 999  # Условно большое число, rectpack сам остановится, когда всё упакует
-    #     for _ in range(max_bins):
-    #         packer.add_bin(*sheet_size)
-    #
-    #     # Выполняем упаковку
-    #     packer.pack()
-    #
-    #     sheets = []
-    #
-    #     # Получаем результат
-    #     for abin in packer:
-    #         sheet = {
-    #             'width': self.sheet_width,
-    #             'height': self.sheet_height,
-    #             'items': [],
-    #             'type': None,  # позже подставится
-    #         }
-    #         for rect in abin:
-    #             x, y = rect.x, rect.y
-    #             w, h = rect.width, rect.height
-    #             rid = rect.rid
-    #
-    #             # Найдём оригинальный item по id, чтобы вернуть тип
-    #             orig_item = next((i for i in items if i['id'] == rid), None)
-    #             if orig_item:
-    #                 sheet['items'].append({
-    #                     'id': rid,
-    #                     'x': x,
-    #                     'y': y,
-    #                     'width': w,
-    #                     'height': h,
-    #                     'rotation': 0 if (orig_item['width'] == w and orig_item['height'] == h) else 90,
-    #                     'type': orig_item['type'],
-    #                 })
-    #
-    #         sheets.append(sheet)
-    #
-    #     return sheets
+        # Добавляем прямоугольники (width, height, id)
+        for item in items:
+            packer.add_rect(item['width'], item['height'], item['id'])
 
-    # def try_place_on_sheet(self, sheet: Dict, item: Dict) -> bool:
-    #     """Пытается разместить элемент на конкретном листе без наслоений"""
-    #     best_rotation = None
-    #     best_rect = None
-    #     min_waste = float('inf')
-    #
-    #     # Проверяем оба варианта поворота
-    #     for rotation in [0, 90]:
-    #         w = item['width'] if rotation == 0 else item['height']
-    #         h = item['height'] if rotation == 0 else item['width']
-    #
-    #         # Ищем лучшее место среди всех свободных областей
-    #         for rect in sheet['remaining_rectangles']:
-    #             rx, ry, rw, rh = rect
-    #
-    #             # Проверяем, помещается ли элемент
-    #             if w <= rw and h <= rh:
-    #                 # Проверяем, не пересекается ли с уже размещенными элементами
-    #                 if not self.check_collision(sheet, rx, ry, w, h):
-    #                     waste = (rw * rh) - (w * h)
-    #                     if waste < min_waste:
-    #                         min_waste = waste
-    #                         best_rotation = rotation
-    #                         best_rect = rect
-    #
-    #     # Если нашли подходящее место
-    #     if best_rect:
-    #         rx, ry, rw, rh = best_rect
-    #         w = item['width'] if best_rotation == 0 else item['height']
-    #         h = item['height'] if best_rotation == 0 else item['width']
-    #
-    #         # Добавляем элемент
-    #         sheet['items'].append({
-    #             'id': item['id'],
-    #             'x': rx,
-    #             'y': ry,
-    #             'width': w,
-    #             'height': h,
-    #             'rotation': best_rotation,
-    #             'type': item.get('type', 'Неизвестный тип')
-    #         })
-    #
-    #         # Обновляем оставшееся пространство
-    #         self.update_remaining_space(sheet, best_rect, w, h)
-    #         return True
-    #
-    #     return False
+        # Добавляем "бин" (лист стекла)
+        sheet_size = (self.sheet_width, self.sheet_height)
+        max_bins = 999  # Условно большое число, rectpack сам остановится, когда всё упакует
+        for _ in range(max_bins):
+            packer.add_bin(*sheet_size)
 
-    # def check_collision(self, sheet: Dict, x: int, y: int, w: int, h: int) -> bool:
-    #     """Проверяет, пересекается ли новый элемент с уже размещенными"""
-    #     new_rect = (x, y, x + w, y + h)
-    #
-    #     for item in sheet['items']:
-    #         existing_rect = (item['x'], item['y'],
-    #                          item['x'] + item['width'],
-    #                          item['y'] + item['height'])
-    #
-    #         # Проверка пересечения прямоугольников
-    #         if not (new_rect[2] <= existing_rect[0] or  # новый слева от существующего
-    #                 new_rect[0] >= existing_rect[2] or  # новый справа от существующего
-    #                 new_rect[3] <= existing_rect[1] or  # новый выше существующего
-    #                 new_rect[1] >= existing_rect[3]):  # новый ниже существующего
-    #             return True  # есть пересечение
-    #
-    #     return False  # нет пересечений
+        # Выполняем упаковку
+        packer.pack()
+
+        sheets = []
+
+        # Получаем результат
+        for abin in packer:
+            sheet = {
+                'width': self.sheet_width,
+                'height': self.sheet_height,
+                'items': [],
+                'type': None,  # позже подставится
+            }
+            for rect in abin:
+                x, y = rect.x, rect.y
+                w, h = rect.width, rect.height
+                rid = rect.rid
+
+                # Найдём оригинальный item по id, чтобы вернуть тип
+                orig_item = next((i for i in items if i['id'] == rid), None)
+                if orig_item:
+                    sheet['items'].append({
+                        'id': rid,
+                        'x': x,
+                        'y': y,
+                        'width': w,
+                        'height': h,
+                        'rotation': 0 if (orig_item['width'] == w and orig_item['height'] == h) else 90,
+                        'type': orig_item['type'],
+                    })
+
+            sheets.append(sheet)
+
+        return sheets
 
 
     def update_interface(self):
