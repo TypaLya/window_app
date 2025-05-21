@@ -1,203 +1,202 @@
 import tkinter as tk
-
-from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkRadioButton
+from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar
 from tkinter import messagebox
 
-from Item import NumberItem
-from GroupSolver import GroupSolver
+from database import (
+    get_production_orders,
+    get_windows_for_production_order
+)
 
-from database import (add_order_to_db, delete_order_from_db, update_order_in_db,
-                      get_all_orders_from_db)
 
 class FrameCuttingTab(CTkFrame):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
-        self.groups = []  # Список для хранения карт раскроя
+        self.groups = []
 
-        # Левый фрейм для ввода заказов
-        self.left_frame = CTkFrame(self, width=200)
-        self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10, expand=False)
+        # Настроим 3 строки:
+        # 0 - шапка (фиксированная высота 80px)
+        # 1 - холст карты раскроя (занимает максимум доступного места)
+        # 2 - нижняя часть с двумя списками (примерно 40% от высоты окна)
+        self.grid_rowconfigure(0, minsize=80)
+        self.grid_rowconfigure(1, weight=6)
+        self.grid_rowconfigure(2, weight=4)
+        self.grid_columnconfigure(0, weight=1)
 
-        self.label_width = CTkLabel(self.left_frame, text="Ширина стеклопакета (мм):")
-        self.label_width.pack(pady=5)
-        self.entry_width = CTkEntry(self.left_frame, width=100)
-        self.entry_width.pack(pady=5)
+        # --- Верхняя шапка ---
+        header_frame = CTkFrame(self)
+        header_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10,5))
 
-        self.label_height = CTkLabel(self.left_frame, text="Высота стеклопакета (мм):")
-        self.label_height.pack(pady=5)
-        self.entry_height = CTkEntry(self.left_frame, width=100)
-        self.entry_height.pack(pady=5)
+        # Делим шапку на 2 колонки (по 50%)
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_columnconfigure(1, weight=1)
 
-        self.label_type = CTkLabel(self.left_frame, text="Тип стеклопакета:")
-        self.label_type.pack(pady=5)
+        # Ввод длины профиля слева, по центру
+        self.length_entry = CTkEntry(header_frame, placeholder_text="2000 <= Длина профиля (мм) <= 6000")
+        self.length_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=10)
+        header_frame.grid_rowconfigure(0, weight=1)
 
-        self.package_type = tk.StringVar(value="Однокамерный")
+        # Кнопка запуска оптимизации справа, по центру
+        self.optimize_button = CTkButton(header_frame, text="Запустить оптимизацию", command=self.optimize_cutting)
+        self.optimize_button.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=10)
 
-        self.radio_single = CTkRadioButton(self.left_frame, text="Однокамерный", variable=self.package_type,
-                                           value="Однокамерный")
-        self.radio_single.pack(anchor='w', padx=10)
-        self.radio_double = CTkRadioButton(self.left_frame, text="Двухкамерный", variable=self.package_type,
-                                           value="Двухкамерный")
-        self.radio_double.pack(anchor='w', padx=10)
+        # --- Холст для визуализации карты раскроя ---
+        self.card_canvas = tk.Canvas(self, bg="white")
+        self.card_canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
-        self.add_order_button = CTkButton(self.left_frame, text="Добавить заказ", command=self.add_order)
-        self.add_order_button.pack(pady=10)
+        # --- Нижняя часть с двумя списками ---
+        bottom_frame = CTkFrame(self)
+        bottom_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(5, 10))
 
-        self.delete_order_button = CTkButton(self.left_frame, text="Удалить заказ", command=self.delete_order)
-        self.delete_order_button.pack(pady=10)
+        # Две колонки по 50% ширины
+        bottom_frame.grid_columnconfigure(0, weight=1)
+        bottom_frame.grid_columnconfigure(1, weight=1)
+        bottom_frame.grid_rowconfigure(0, weight=1)
 
-        self.update_order_button = CTkButton(self.left_frame, text="Изменить заказ", command=self.update_order)
-        self.update_order_button.pack(pady=10)
+        # Список заказов слева
+        orders_frame = CTkFrame(bottom_frame)
+        orders_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        orders_frame.grid_rowconfigure(1, weight=1)
+        orders_frame.grid_columnconfigure(0, weight=1)
 
-        self.order_list_frame = CTkFrame(self.left_frame)
-        self.order_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        orders_label = CTkLabel(orders_frame, text="Список заказов")
+        orders_label.grid(row=0, column=0, sticky="w")
 
-        self.scrollbar = CTkScrollbar(self.order_list_frame)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.order_listbox = tk.Listbox(orders_frame, bg="#333333", fg="white", font=("Arial", 12))
+        self.order_listbox.grid(row=1, column=0, sticky="nsew")
 
-        self.order_listbox = tk.Listbox(self.order_list_frame, yscrollcommand=self.scrollbar.set, height=15,
-                                        bg="#333333", fg="white", font=("Arial", 12))
-        self.order_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.configure(command=self.order_listbox.yview)
+        scrollbar_orders = CTkScrollbar(orders_frame, command=self.order_listbox.yview)
+        scrollbar_orders.grid(row=1, column=1, sticky="ns")
+        self.order_listbox.config(yscrollcommand=scrollbar_orders.set)
 
-        # Правый фрейм для результатов оптимизации
-        self.right_frame = CTkFrame(self, width=200)
-        self.right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10, expand=False)
+        # Список карт раскроя справа
+        cards_frame = CTkFrame(bottom_frame)
+        cards_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        cards_frame.grid_rowconfigure(1, weight=1)
+        cards_frame.grid_columnconfigure(0, weight=1)
 
-        self.card_list_frame = CTkFrame(self.right_frame)
-        self.card_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        cards_label = CTkLabel(cards_frame, text="Карты раскроя")
+        cards_label.grid(row=0, column=0, sticky="w")
 
-        self.card_listbox = tk.Listbox(self.card_list_frame, height=15, bg="#333333", fg="white", font=("Arial", 12))
-        self.card_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.card_listbox = tk.Listbox(cards_frame, bg="#333333", fg="white", font=("Arial", 12))
+        self.card_listbox.grid(row=1, column=0, sticky="nsew")
 
-        self.scrollbar_cards = CTkScrollbar(self.card_list_frame)
-        self.scrollbar_cards.pack(side=tk.RIGHT, fill=tk.Y)
-        self.scrollbar_cards.configure(command=self.card_listbox.yview)
+        scrollbar_cards = CTkScrollbar(cards_frame, command=self.card_listbox.yview)
+        scrollbar_cards.grid(row=1, column=1, sticky="ns")
+        self.card_listbox.config(yscrollcommand=scrollbar_cards.set)
 
-        # Центральная область
-        self.center_frame = CTkFrame(self)
-        self.center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.card_listbox.bind("<<ListboxSelect>>", self.display_card_details)
 
-        self.optimize_button = CTkButton(self.center_frame, text="Запустить оптимизацию", command=self.optimize_cutting,
-                                         width=200)
-        self.optimize_button.pack(pady=5, anchor='n')
-
-        self.card_canvas = tk.Canvas(self.center_frame, width=800, height=100, bg="white")
-        self.card_canvas.pack(pady=10)
-
-        self.unused_label = CTkLabel(self.center_frame, text=f"")
-        self.unused_label.pack(anchor='w', padx=10, pady=5)
-
-        # Загружаем заказы из базы данных
         self.load_orders_from_db()
 
-    def add_order(self):
-        width = self.entry_width.get()
-        height = self.entry_height.get()
-        if width and height:
-            try:
-                width = int(width)
-                height = int(height)
-                if width <= 0 or height <= 0:
-                    messagebox.showerror("Ошибка", "Ширина и высота должны быть положительными числами.")
-                    return
 
-                # Добавляем заказ в базу данных
-                add_order_to_db(width, height, self.package_type.get())
-
-                # Обновляем список заказов
-                self.load_orders_from_db()
-
-                # Оповещаем родительское окно об изменении данных
-                self.parent.on_orders_updated()
-
-            except ValueError:
-                messagebox.showerror("Ошибка", "Неверный ввод. Пожалуйста, введите целые числа.")
-
-    def delete_order(self):
-        selected_order_index = self.order_listbox.curselection()
-        if selected_order_index:
-            # Получаем ID выбранного заказа
-            orders = get_all_orders_from_db()
-            order_id = orders[selected_order_index[0]][0]
-
-            delete_order_from_db(order_id)
-            self.load_orders_from_db()
-            self.parent.on_orders_updated()
-        else:
-            messagebox.showwarning("Предупреждение", "Пожалуйста, выберите заказ для удаления.")
-
-    def update_order(self):
-        selected_order_index = self.order_listbox.curselection()
-        if selected_order_index:
-            # Получаем выбранный заказ
-            orders = get_all_orders_from_db()
-            order_id = orders[selected_order_index[0]][0]
-
-            new_width = self.entry_width.get()
-            new_height = self.entry_height.get()
-
-            if new_width and new_height:
-                try:
-                    new_width = int(new_width)
-                    new_height = int(new_height)
-
-                    update_order_in_db(order_id, new_width, new_height)
-                    self.load_orders_from_db()
-                    self.parent.on_orders_updated()
-
-                    self.entry_width.delete(0, tk.END)
-                    self.entry_height.delete(0, tk.END)
-
-                except ValueError:
-                    messagebox.showerror("Ошибка", "Неверный ввод. Пожалуйста, введите целые числа.")
-            else:
-                messagebox.showwarning("Предупреждение", "Пожалуйста, введите новые значения.")
-        else:
-            messagebox.showwarning("Предупреждение", "Пожалуйста, выберите заказ для изменения.")
+    # Далее идут ваши методы (без изменений)...
+    def update_orders_list(self):
+        self.order_listbox.delete(0, tk.END)
+        orders = get_production_orders()
+        if not orders:
+            return
+        for order in orders:
+            order_id = order[0]
+            status = order[-1]
+            if status.lower() == "завершен":
+                continue
+            windows = get_windows_for_production_order(order_id)
+            for window in windows:
+                window_id, window_type, width, height, quantity = window
+                for _ in range(quantity):
+                    order_text = f"Заказ {order_id}: {width}x{height} ({window_type})"
+                    self.order_listbox.insert(tk.END, order_text)
 
     def load_orders_from_db(self):
-        orders = get_all_orders_from_db()
-        self.order_listbox.delete(0, tk.END)
-        for order in orders:
-            order_id, width, height, package_type = order
-            order_text = f"Заказ {order_id}: {width}x{height} ({package_type})"
-            self.order_listbox.insert(tk.END, order_text)
+        self.update_orders_list()
 
     def optimize_cutting(self):
-        orders = get_all_orders_from_db()
-        items = []
+        total_length_str = self.length_entry.get().strip()
+        if total_length_str == "":
+            total_length = 6000  # значение по умолчанию
+        else:
+            try:
+                total_length = int(total_length_str)
+                if not (2000 <= total_length <= 6000):
+                    raise ValueError()
+            except Exception:
+                messagebox.showerror("Ошибка", "Введите корректную длину профиля от 2000 до 6000 мм (целое число).")
+                return
 
-        for order in orders:
-            order_id, width, height, package_type = order
-            if package_type == "Однокамерный":
-                values = [width, height, width, height]
-            else:
-                values = [width, height, width, height, width, height, width, height]
+        reserve = 21
 
-            items.append(NumberItem(index=order_id, values=values))
+        # Далее используем total_length в расчетах
+        pieces = []
 
-        solver = GroupSolver(items)
-        groups, unused_values = solver.group_numbers()
+        for i in range(self.order_listbox.size()):
+            order_text = self.order_listbox.get(i)
+            try:
+                order_id_str = order_text.split(" ")[1].rstrip(":")
+                order_id = int(order_id_str)
+                dims_part = order_text.split(": ")[1].split(" ")[0]
+                width_str, height_str = dims_part.split("x")
+                width = int(width_str)
+                height = int(height_str)
 
-        self.groups = groups
+                horizontal_length = width - reserve
+                vertical_length = height - reserve
+
+                if horizontal_length > 0:
+                    pieces.append((order_id, horizontal_length))
+                    pieces.append((order_id, horizontal_length))
+                if vertical_length > 0:
+                    pieces.append((order_id, vertical_length))
+                    pieces.append((order_id, vertical_length))
+
+            except Exception:
+                continue
+
+        pieces.sort(key=lambda x: x[1], reverse=True)
+
+        groups = []
+        groups_sum = []
+
+        for piece in pieces:
+            placed = False
+            for i, used in enumerate(groups_sum):
+                if used + piece[1] <= total_length:
+                    groups[i].append(piece)
+                    groups_sum[i] += piece[1]
+                    placed = True
+                    break
+            if not placed:
+                groups.append([piece])
+                groups_sum.append(piece[1])
+
+        self.groups = []
+        for group in groups:
+            d = {}
+            for order_id, length in group:
+                d.setdefault(order_id, []).append(length)
+            self.groups.append(d)
+
         self.card_listbox.delete(0, tk.END)
+        for i, group in enumerate(self.groups):
+            summary = []
+            for oid, lengths in group.items():
+                counts = {}
+                for l in lengths:
+                    counts[l] = counts.get(l, 0) + 1
+                parts_desc = [f"{cnt}×{lng}мм" for lng, cnt in counts.items()]
+                summary.append(f"Заказ {oid}: " + ", ".join(parts_desc))
+            text = f"Профиль {i + 1}: " + "; ".join(summary)
+            self.card_listbox.insert(tk.END, text)
 
-        for idx, group in enumerate(groups):
-            group_sum = sum(value for values in group.values() for value in values)
-            group_text = f"Карта {idx + 1}: Сумма = {group_sum}"
-            self.card_listbox.insert(tk.END, group_text)
-
-        if unused_values:
-            self.unused_label.configure(text=f"Не задействованные значения: {unused_values}")
+        if self.groups:
+            self.draw_horizontal_cutting_plan(self.groups[0])
 
     def draw_horizontal_cutting_plan(self, group):
-        canvas_width = 800
+        canvas_width = self.card_canvas.winfo_width() or 800
         canvas_height = 100
         self.card_canvas.delete("all")
 
-        total_length = 6000
+        total_length = int(self.length_entry.get()) if self.length_entry.get().isdigit() else 6000
         x_start = 0
         used_length = 0
 
@@ -239,11 +238,13 @@ class FrameCuttingTab(CTkFrame):
 
             self.card_canvas.create_text(
                 (x_start + x_end) / 2, (y_top + y_bottom) / 2,
-                text=f"{remaining_length} мм", fill="white", font=("Arial", 10)
+                text=f"{remaining_length}", fill="black", font=("Arial", 10)
             )
 
     def display_card_details(self, event):
-        selected_index = self.card_listbox.curselection()
-        if selected_index:
-            group = self.groups[selected_index[0]]
-            self.draw_horizontal_cutting_plan(group)
+        selection = event.widget.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        group = self.groups[index]
+        self.draw_horizontal_cutting_plan(group)
