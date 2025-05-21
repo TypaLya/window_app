@@ -1887,70 +1887,79 @@ class GlassCuttingTab(CTkFrame):
             if not file_path:
                 return
 
-            # Создаем простой DXF документ
-            try:
-                doc = ezdxf.new('R2010')
-                doc.header['$INSUNITS'] = 4  # Миллиметры
-                msp = doc.modelspace()
+            # Создаем DXF документ
+            doc = ezdxf.new('R2010')
+            doc.header['$INSUNITS'] = 4  # Миллиметры
+            msp = doc.modelspace()
 
-                # 1. Граница листа (прямоугольник)
-                sheet_points = [
-                    Vec2(0, 0),
-                    Vec2(group['width'], 0),
-                    Vec2(group['width'], group['height']),
-                    Vec2(0, group['height']),
-                    Vec2(0, 0)  # Замыкаем
-                ]
-                msp.add_lwpolyline(sheet_points, dxfattribs={
-                    'layer': 'SHEET',
-                    'color': 1
+            # Создаем слои
+            doc.layers.add('SHEET', color=1)
+            doc.layers.add('GLASS', color=3)
+            doc.layers.add('TEXT', color=7)  # Белый цвет для текста
+
+            # 1. Граница листа (прямоугольник)
+            msp.add_lwpolyline([
+                (0, 0),
+                (group['width'], 0),
+                (group['width'], group['height']),
+                (0, group['height']),
+                (0, 0)
+            ], dxfattribs={
+                'layer': 'SHEET',
+                'color': 1
+            })
+
+            # 2. Элементы раскроя
+            for item in group['items']:
+                # Координаты элемента
+                x, y = item['x'], item['y']
+                width, height = item['width'], item['height']
+
+                # Полилиния элемента
+                msp.add_lwpolyline([
+                    (x, y),
+                    (x + width, y),
+                    (x + width, y + height),
+                    (x, y + height)
+                ], dxfattribs={
+                    'layer': 'GLASS',
+                    'color': 3 if item.get('rotation') else 2,
+                    'closed': True  # ВАЖНО!
                 })
 
-                # 2. Элементы раскроя
-                for item in group['items']:
-                    # Координаты элемента
-                    x, y = item['x'], item['y']
-                    width, height = item['width'], item['height']
+                # Добавляем текст с ID и размерами по центру элемента
+                text_height = min(width, height) / 5  # Размер текста относительно размера элемента
+                text_content = f"{item['id']}\n{width}x{height}"
 
-                    # Полилиния элемента
-                    points = [
-                        Vec2(x, y),
-                        Vec2(x + width, y),
-                        Vec2(x + width, y + height),
-                        Vec2(x, y + height),
-                        Vec2(x, y)  # Замыкаем
-                    ]
+                mtext = msp.add_mtext(text_content, dxfattribs={
+                    'layer': 'TEXT',
+                    'char_height': text_height,
+                    'color': 7,
+                    'width': width * 0.9  # Ширина текстового блока
+                })
+                mtext.set_location(
+                    insert=(x + width / 2, y + height / 2),
+                    rotation=0,
+                    attachment_point=ezdxf.const.MTEXT_MIDDLE_CENTER
+                )
 
-                    msp.add_lwpolyline(points, dxfattribs={
-                        'layer': 'GLASS',
-                        'color': 3 if item.get('rotation') else 2
-                    })
+            # Сохраняем файл
+            if 'type' in group:
+                msp.add_mtext(
+                    f"GLASS_TYPE:{group['type']}",
+                    dxfattribs={
+                        'layer': 'TEXT',
+                        'char_height': 20,
+                        'color': 7
+                    }
+                ).set_location(insert=(0, group['height'] + 100), attachment_point=ezdxf.const.MTEXT_TOP_LEFT)
 
-                    # Простой текст по центру
-                    text = msp.add_text(
-                        f"{item['id']}",
-                        dxfattribs={
-                            'layer': 'TEXT',
-                            'height': min(width, height) / 4,
-                            'color': 0
-                        }
-                    )
-                    text.dxf.insert = Vec2(x + width / 2, y + height / 2)
-                    text.dxf.halign = 1  # Центр по горизонтали
-                    text.dxf.valign = 3  # Середина по вертикали
-
-                # Сохраняем файл
-                doc.saveas(file_path)
-                messagebox.showinfo("Успех", f"Файл успешно сохранен:\n{file_path}")
-
-            except Exception as e:
-                messagebox.showerror("Ошибка экспорта",
-                                     f"Не удалось сохранить DXF:\n{str(e)}\n"
-                                     f"Тип ошибки: {type(e).__name__}")
+            doc.saveas(file_path)
+            messagebox.showinfo("Успех", f"Файл успешно сохранен:\n{file_path}")
 
         except Exception as e:
-            messagebox.showerror("Критическая ошибка",
-                                 f"Непредвиденная ошибка:\n{str(e)}\n"
+            messagebox.showerror("Ошибка экспорта",
+                                 f"Не удалось сохранить DXF:\n{str(e)}\n"
                                  f"Тип ошибки: {type(e).__name__}")
 
     def import_from_dxf(self):
@@ -1974,97 +1983,113 @@ class GlassCuttingTab(CTkFrame):
             doc = ezdxf.readfile(file_path)
             msp = doc.modelspace()
 
-            # 1. Определяем границы листа
-            bbox = BoundingBox()
-            for entity in msp:
-                try:
-                    bbox.extend(entity.bbox())
-                except:
-                    continue
-
-            sheet_width = bbox.size.x if bbox.has_data else 6000
-            sheet_height = bbox.size.y if bbox.has_data else 6000
-
-            # 2. Собираем элементы
+            # 1. Определяем границы листа (ищем самый большой прямоугольник)
+            sheet_width, sheet_height = 6000, 6000  # значения по умолчанию
             items = []
-            text_map = {}
+            text_elements = []
 
-            # Сначала собираем все текстовые элементы
-            for text in msp.query('TEXT'):
-                text_map[(text.dxf.insert.x, text.dxf.insert.y)] = text.dxf.text
 
-            # Затем обрабатываем полилинии
-            for poly in msp.query('LWPOLYLINE'):
-                if poly.closed and len(poly) in [4, 5]:
-                    points = list(poly.vertices())
-                    x_coords = [p[0] for p in points]
-                    y_coords = [p[1] for p in points]
+            # Сначала собираем все текстовые элементы и полилинии
+            for entity in msp:
+                if entity.dxftype() == 'MTEXT':
+                    text_elements.append(entity)
+                elif entity.dxftype() == 'TEXT':
+                    text_elements.append(entity)
+                elif entity.dxftype() in ('LWPOLYLINE', 'POLYLINE', 'LINE'):
+                    # Обрабатываем полилинии и линии
+                    if entity.dxftype() == 'POLYLINE':
+                        try:
+                            points = [tuple(v.dxf.location.xy) for v in entity.vertices()]
+                            if len(points) >= 4 and points[0] == points[-1]:  # замкнута вручную
+                                entity.closed = True
+                                entity.__class__ = ezdxf.entities.LWPolyline  # подделываем тип
+                        except Exception as e:
+                            continue
+                    if entity.dxftype() == 'LWPOLYLINE' and entity.closed and len(entity) >= 4:
+                        points = list(entity.vertices())
+                        x_coords = [p[0] for p in points]
+                        y_coords = [p[1] for p in points]
 
-                    x = min(x_coords)
-                    y = min(y_coords)
-                    width = max(x_coords) - x
-                    height = max(y_coords) - y
+                        x = min(x_coords)
+                        y = min(y_coords)
+                        width = max(x_coords) - x
+                        height = max(y_coords) - y
 
-                    # Пропускаем границу листа
-                    if abs(width - sheet_width) < 1 and abs(height - sheet_height) < 1:
-                        continue
+                        # Если это граница листа (самый большой прямоугольник)
+                        if width * height > sheet_width * sheet_height * 0.9:
+                            sheet_width = width
+                            sheet_height = height
+                            continue
 
-                    # Ищем текст внутри элемента
-                    center = Vec2(x + width / 2, y + height / 2)
-                    item_id = f"imported_{len(items) + 1}"
-                    size_info = ""
+                        # Создаем элемент
+                        item_id = f"imported_{len(items) + 1}"
+                        rotation = 0
 
-                    # Проверяем центр и все углы
-                    for check_pos in [
-                        center,
-                        Vec2(x + width * 0.2, y + height * 0.2),
-                        Vec2(x + width * 0.8, y + height * 0.8)
-                    ]:
-                        for text_pos, text_content in text_map.items():
-                            if (x <= text_pos[0] <= x + width and
-                                    y <= text_pos[1] <= y + height):
-                                item_id = text_content.split('|')[0]
-                                if 'x' in text_content:
-                                    size_info = text_content.split('|')[-1]
-                                break
+                        items.append({
+                            'id': item_id,
+                            'x': x,
+                            'y': y,
+                            'width': width,
+                            'height': height,
+                            'rotation': rotation,
+                            'type': 'imported'
+                        })
 
-                    # Определяем поворот
-                    rotation = 0
-                    if size_info:
-                        orig_w, orig_h = map(float, size_info.split('x'))
-                        if abs(width - orig_h) < 1 and abs(height - orig_w) < 1:
-                            rotation = 90
+            # 2. Сопоставляем текст с элементами
+            for text in text_elements:
+                text_x, text_y = text.dxf.insert.x, text.dxf.insert.y
+                text_content = text.dxf.text if hasattr(text.dxf, 'text') else text.dxf.plain_text()
 
-                    items.append({
-                        'id': item_id,
-                        'x': x,
-                        'y': y,
-                        'width': width,
-                        'height': height,
-                        'rotation': rotation,
-                        'type': 'imported'
-                    })
+                # Ищем элемент, содержащий этот текст
+                for item in items:
+                    if (item['x'] <= text_x <= item['x'] + item['width'] and
+                            item['y'] <= text_y <= item['y'] + item['height']):
+
+                        # Пытаемся извлечь ID из текста
+                        lines = text_content.split('\n')
+                        if lines:
+                            item['id'] = lines[0].split("\\")[0]
+                            if len(lines) > 1 and 'x' in lines[1]:
+                                # Если есть размеры, проверяем поворот
+                                parts = lines[1].split('x')
+                                if len(parts) == 2:
+                                    try:
+                                        w = float(parts[0].strip())
+                                        h = float(parts[1].strip())
+                                        if abs(item['width'] - h) < 1 and abs(item['height'] - w) < 1:
+                                            item['rotation'] = 90
+                                    except ValueError:
+                                        pass
+                        break
 
             if not items:
                 messagebox.showwarning("Предупреждение",
                                        "Не найдено элементов. Проверьте что:\n"
                                        "1. Элементы - замкнутые полилинии (4 точки)\n"
-                                       "2. Текст с ID расположен внутри элементов\n"
-                                       "3. Файл соответствует экспортированному формату")
+                                       "2. Текст с ID расположен внутри элементов")
                 return
 
             # 3. Создаем группу
+            glass_type = "imported"  # Значение по умолчанию
+
+            for text in text_elements:
+                content = text.dxf.text if hasattr(text.dxf, 'text') else text.plain_text()
+                if "GLASS_TYPE:" in content:
+                    glass_type = content.split("GLASS_TYPE:")[1].strip()
+                    break
+
             new_group = {
                 'width': sheet_width,
                 'height': sheet_height,
                 'items': items,
-                'type': 'imported',
+                'type': glass_type,
                 'used_area': sum(i['width'] * i['height'] for i in items),
                 'wasted_area': sheet_width * sheet_height - sum(i['width'] * i['height'] for i in items),
                 'fill_percentage': (sum(i['width'] * i['height'] for i in items) / (sheet_width * sheet_height) * 100)
             }
 
             self.groups.append(new_group)
+
             self.update_interface()
             self.card_listbox.selection_clear(0, tk.END)
             self.card_listbox.selection_set(len(self.groups) - 1)
