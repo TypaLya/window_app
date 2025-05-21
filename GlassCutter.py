@@ -58,15 +58,20 @@ class GlassCuttingTab(CTkFrame):
         self.tooltip = None
         self.side_panels_width = 200
 
-        # Левый фрейм для работы с заказами
-        self.left_frame = CTkFrame(self, width=self.side_panels_width)
-        self.left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10, expand=False)
+        self.main_paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, sashwidth=6, sashrelief=tk.RAISED, bg="gray")
+        self.main_paned.pack(fill=tk.BOTH, expand=True)
+
+        # Левая панель
+        self.left_frame = CTkFrame(self.main_paned, width=self.side_panels_width)
+        self.main_paned.add(self.left_frame, minsize=150)
 
         # Разделитель для левой панели
-        self.left_separator = ttk.Separator(self, orient="vertical")
-        self.left_separator.pack(side=tk.LEFT, fill="y", padx=2)
-        self.left_separator.bind("<B1-Motion>", self.resize_left_panel)
-        self.left_separator.bind("<Button-3>", self.show_panel_context_menu)
+        # self.left_separator = ttk.Separator(self, orient="vertical")
+        # self.left_separator.pack(side=tk.LEFT, fill="y", padx=2)
+        # self.left_separator.bind("<B1-Motion>", self.resize_left_panel)
+        self.left_frame.bind("<Button-3>", self.show_panel_context_menu)
+        for child in self.left_frame.winfo_children():
+            child.bind("<Button-3>", lambda e: "break")
 
         # Добавляем поля для ввода размеров листа стекла
         self.label_sheet_width = CTkLabel(self.left_frame, text="Ширина листа стекла (мм):")
@@ -81,29 +86,9 @@ class GlassCuttingTab(CTkFrame):
         self.entry_sheet_height.insert(0, "6000")
         self.entry_sheet_height.pack(pady=5)
 
-        # Правый фрейм для результатов
-        self.right_frame = CTkFrame(self, width=self.side_panels_width)
-        self.right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10, expand=False)
-
-        # Разделитель для правой панели
-        self.right_separator = ttk.Separator(self, orient="vertical")
-        self.right_separator.pack(side=tk.RIGHT, fill="y", padx=2)
-        self.right_separator.bind("<B1-Motion>", self.resize_right_panel)
-        self.right_separator.bind("<Button-3>", self.show_panel_context_menu)
-
-        self.card_list_frame = CTkFrame(self.right_frame)
-        self.card_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-
-        self.card_listbox = tk.Listbox(self.card_list_frame, height=15, bg="#333333", fg="white", font=("Arial", 12))
-        self.card_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.scrollbar_cards = CTkScrollbar(self.card_list_frame)
-        self.scrollbar_cards.pack(side=tk.RIGHT, fill=tk.Y)
-        self.scrollbar_cards.configure(command=self.card_listbox.yview)
-
         # Центральная область
-        self.center_frame = CTkFrame(self)
-        self.center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.center_frame = CTkFrame(self.main_paned)
+        self.main_paned.add(self.center_frame, minsize=200)
 
         # Создаем фрейм для элементов управления оптимизацией
         self.optimization_control_frame = CTkFrame(self.center_frame)
@@ -151,12 +136,36 @@ class GlassCuttingTab(CTkFrame):
         # Холст для отображения
         self.card_canvas = tk.Canvas(
             self.center_frame,
-            width=600,
+            width=800,
             height=600,
             bg="white",
             highlightthickness=0
         )
         self.card_canvas.pack(pady=10, fill=tk.BOTH, expand=True)
+
+        # Правый фрейм для результатов
+        self.right_frame = CTkFrame(self.main_paned, width=self.side_panels_width)
+        self.main_paned.add(self.right_frame, minsize=150)
+
+        # Разделитель для правой панели
+        # self.right_separator = ttk.Separator(self, orient="vertical")
+        # self.right_separator.pack(side=tk.RIGHT, fill="y", padx=2)
+        # self.right_separator.bind("<B1-Motion>", self.resize_right_panel)
+        # self.right_separator.bind("<Button-3>", self.show_panel_context_menu)
+        self.right_frame.bind("<Button-3>", self.show_panel_context_menu)
+        for child in self.right_frame.winfo_children():
+            child.bind("<Button-3>", lambda e: "break")
+
+        self.card_list_frame = CTkFrame(self.right_frame)
+        self.card_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        self.card_listbox = tk.Listbox(self.card_list_frame, height=15, bg="#333333", fg="white", font=("Arial", 12))
+        self.card_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.scrollbar_cards = CTkScrollbar(self.card_list_frame)
+        self.scrollbar_cards.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scrollbar_cards.configure(command=self.card_listbox.yview)
+
 
         # Метка для неиспользованной области
         self.unused_label = CTkLabel(self.center_frame, text="")
@@ -476,11 +485,11 @@ class GlassCuttingTab(CTkFrame):
             self.right_frame.pack_configure(padx=10 if new_width > 160 else 5)
 
     def show_panel_context_menu(self, event):
-        """Показывает контекстное меню для управления панелями"""
+        """Обработчик события правого клика по панели"""
         # Определяем, какая панель была кликнута
-        if event.widget == self.left_separator:
+        if event.widget == self.left_frame:
             panel = "left"
-        elif event.widget == self.right_separator:
+        elif event.widget == self.right_frame:
             panel = "right"
         else:
             return
@@ -542,7 +551,6 @@ class GlassCuttingTab(CTkFrame):
             self.right_frame.configure(width=200)
 
     def open_panel_in_window(self, panel):
-        """Открывает панель в отдельном окне"""
         if panel == "left":
             content = self.left_frame
             title = "Список заказов"
@@ -550,27 +558,30 @@ class GlassCuttingTab(CTkFrame):
             content = self.right_frame
             title = "Карты раскроя"
 
-        # Создаем новое окно
+        parent = content.master
+        try:
+            self.main_paned.forget(content)  # удаляем из PanedWindow
+        except Exception as e:
+            print("Ошибка при удалении из панели:", e)
+
         new_window = tk.Toplevel(self)
         new_window.title(title)
         new_window.geometry(f"{self.side_panels_width}x600")
 
-        # Перемещаем содержимое в новое окно
-        content.pack_forget()
-        content.pack(in_=new_window, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        content.pack(fill=tk.BOTH, expand=True, padx=10, pady=10, in_=new_window)
 
-        # Настраиваем закрытие окна
         def on_close():
-            content.pack_forget()
-            if panel == "left":
-                content.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10, expand=False)
-            else:
-                content.pack(side=tk.RIGHT, fill=tk.Y, padx=10, pady=10, expand=False)
-            new_window.destroy()
+            try:
+                content.pack_forget()
+                if panel == "left":
+                    self.main_paned.insert(0, content)
+                else:
+                    self.main_paned.add(content)
+                new_window.destroy()
+            except Exception as e:
+                print("Ошибка при возвращении панели:", e)
 
         new_window.protocol("WM_DELETE_WINDOW", on_close)
-
-        # Делаем окно изменяемым по размеру
         new_window.resizable(True, True)
 
     def select_default_card(self):
@@ -750,7 +761,7 @@ class GlassCuttingTab(CTkFrame):
                 current_count += 1
                 if current_count == target_sequence:
                     # Подсвечиваем строку
-                    self.order_listbox.itemconfig(i, bg="darkblue", fg="white")
+                    self.order_listbox.itemconfig(i, bg="#0078d7", fg="white")
 
                     # Прокручиваем к ней
                     self.order_listbox.see(i)
@@ -840,44 +851,57 @@ class GlassCuttingTab(CTkFrame):
             print(f"Ошибка при выделении элемента: {e}")
 
     def show_context_info(self):
-        """Показывает информацию о выбранном элементе в отдельном окне"""
+        """Показывает информацию о выбранном элементе рядом с курсором"""
         if not hasattr(self, 'context_item') or not self.context_item:
             return
 
         item = self.context_item
 
-        # Создаем окно
+        # Создаем новое окно
         info_window = tk.Toplevel(self)
-        info_window.title(f"Информация о элементе {item['id']}")
-        info_window.geometry("300x200")
+        info_window.title(f"Элемент {item['id']}")
         info_window.resizable(False, False)
+        info_window.transient(self)  # Привязка к главному окну
+        info_window.attributes("-topmost", False)
 
-        # Центрируем окно
-        window_width = info_window.winfo_reqwidth()
-        window_height = info_window.winfo_reqheight()
-        position_right = int(info_window.winfo_screenwidth() / 2 - window_width / 2)
-        position_down = int(info_window.winfo_screenheight() / 2 - window_height / 2)
-        info_window.geometry(f"+{position_right}+{position_down}")
+        # Создаем контейнер с выравниванием
+        container = tk.Frame(info_window, padx=15, pady=15)
+        container.pack(fill=tk.BOTH, expand=True)
 
-        # Добавляем информацию
-        info_frame = CTkFrame(info_window)
-        info_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+        labels = {
+            "ID": item.get('id', '—'),
+            "Размер": f"{item['width']} × {item['height']} мм",
+            "Позиция": f"X = {item['x']} мм\nY = {item['y']} мм",
+            "Поворот": "90°" if item.get('rotation') else "нет",
+            "Тип": item.get('type', 'неизвестно'),
+        }
 
-        info_text = (f"ID: {item['id']}\n\n"
-                     f"Размер: {item['width']}×{item['height']} мм\n\n"
-                     f"Позиция: X={item['x']} мм, Y={item['y']} мм\n\n"
-                     f"Поворот: {'90°' if item.get('rotation') else 'нет'}\n\n"
-                     f"Тип: {item.get('type', 'неизвестно')}")
+        for i, (key, value) in enumerate(labels.items()):
+            tk.Label(container, text=f"{key}:", anchor="w", font=("Arial", 10, "bold")).grid(row=i, column=0,
+                                                                                             sticky="w", pady=3)
+            tk.Label(container, text=value, anchor="w", font=("Arial", 10)).grid(row=i, column=1, sticky="w", pady=3)
 
-        CTkLabel(info_frame,
-                 text=info_text,
-                 justify="left",
-                 font=("Arial", 12)).pack(pady=10, padx=10)
+        tk.Button(container, text="Закрыть", command=info_window.destroy).grid(row=len(labels), column=0, columnspan=2,
+                                                                               pady=10)
 
-        # Кнопка закрытия
-        CTkButton(info_window,
-                  text="Закрыть",
-                  command=info_window.destroy).pack(pady=5)
+        # 📌 Получаем позицию курсора
+        x = self.winfo_pointerx()
+        y = self.winfo_pointery()
+
+        # Размер окна и границы экрана
+        info_window.update_idletasks()
+        w = info_window.winfo_width()
+        h = info_window.winfo_height()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+
+        # Автоматическая корректировка, чтобы окно не выходило за экран
+        if x + w > screen_w:
+            x = screen_w - w - 10
+        if y + h > screen_h:
+            y = screen_h - h - 10
+
+        info_window.geometry(f"+{x}+{y}")
 
     def rotate_selected_item(self):
         """Поворачивает выбранный элемент на 90 градусов"""
