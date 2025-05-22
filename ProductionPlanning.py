@@ -482,6 +482,9 @@ class ProductionPlanningTab(CTkFrame):
         first_day = datetime(self.current_year, self.current_month, 1).date()
         last_day = datetime(self.current_year, self.current_month + 1, 1).date() - timedelta(days=1)
 
+        # Получаем текущую дату
+        today = datetime.now().date()
+
         # Определяем дни недели для первого и последнего дня месяца
         start_weekday = first_day.weekday()  # 0-пн, 6-вс
         total_days = last_day.day
@@ -512,10 +515,17 @@ class ProductionPlanningTab(CTkFrame):
                 x = day * day_width
                 y = (week + 1) * day_height
 
+                # Определяем цвет фона для текущего дня
+                current_date = datetime(self.current_year, self.current_month, current_day).date()
+                if current_date == today:
+                    day_color = "#8ab4f8"  # Голубой цвет для текущего дня
+                else:
+                    day_color = "#555555"  # Стандартный цвет для других дней
+
                 # Рисуем ячейку дня
                 self.calendar_canvas.create_rectangle(
                     x, y, x + day_width, y + day_height,
-                    fill="#555555", outline="black"
+                    fill=day_color, outline="black"
                 )
 
                 # Подпись числа
@@ -526,7 +536,6 @@ class ProductionPlanningTab(CTkFrame):
                 )
 
                 # Проверяем заказы на эту дату
-                current_date = datetime(self.current_year, self.current_month, current_day).date()
                 day_orders = [o for o in orders
                               if datetime.strptime(o[3], "%Y-%m-%d").date() == current_date]
 
@@ -906,6 +915,9 @@ class ProductionPlanningTab(CTkFrame):
         self.warehouse_tree.column("used", width=150, anchor='center')
         self.warehouse_tree.column("in_stock", width=100, anchor='center')
 
+        # Создаем тег для выделения недостающих материалов
+        self.warehouse_tree.tag_configure('not_enough', background='#ffcccc')  # светло-красный фон
+
         # Получаем все заказы
         orders = get_production_orders()
 
@@ -930,7 +942,8 @@ class ProductionPlanningTab(CTkFrame):
 
                 materials_sum[mat_type]['amount'] += amount
 
-        # Функция для поиска материала на складах по частичному совпадению
+            # Функция для поиска материала на складах по частичному совпадению
+
         def find_material_on_warehouse(material_name):
             # Получаем данные со всех складов
             warehouses = [
@@ -959,7 +972,8 @@ class ProductionPlanningTab(CTkFrame):
 
             return None
 
-        # Сортируем материалы по алфавиту
+            # Сортируем материалы по алфавиту
+
         sorted_materials = sorted(materials_sum.items(), key=lambda x: x[0])
 
         # Добавляем данные в таблицу
@@ -970,15 +984,30 @@ class ProductionPlanningTab(CTkFrame):
             # Ищем материал на складах
             warehouse_material = find_material_on_warehouse(mat_type)
 
+            tags = ()
+
             if warehouse_material:
                 stock_value = f"{round(warehouse_material['amount'], 3)} {warehouse_material['unit']}"
+
+                # Проверяем, хватает ли материала
+                try:
+                    # Сравниваем количество, игнорируя единицы измерения
+                    used_amount = float(data['amount'])
+                    stock_amount = float(warehouse_material['amount'])
+
+                    if used_amount > stock_amount:
+                        tags = ('not_enough',)
+                except ValueError:
+                    pass
             else:
                 stock_value = "Не найден"
+                tags = ('not_enough',)
 
             self.warehouse_tree.insert("", tk.END,
                                        values=(mat_type,
                                                used_value,
-                                               stock_value))
+                                               stock_value),
+                                       tags=tags)
 
     def load_materials_for_order(self, order_id):
         """Загрузка списка материалов для заказа с нумерацией"""
