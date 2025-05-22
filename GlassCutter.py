@@ -85,7 +85,7 @@ class GlassCuttingTab(CTkFrame):
         self.label_sheet_height.pack(pady=5)
         self.entry_sheet_height = CTkEntry(self.left_frame, width=100)
         self.entry_sheet_height.insert(0, "6000")
-        self.entry_sheet_height.pack(pady=5)
+        self.entry_sheet_height.pack(padx=5)
 
         # Центральная область
         self.center_frame = CTkFrame(self.main_paned)
@@ -102,7 +102,7 @@ class GlassCuttingTab(CTkFrame):
             command=self.optimize_cutting,
             width=200
         )
-        self.optimize_button.pack(side=tk.LEFT, padx=(0, 10))
+        self.optimize_button.pack(side=tk.LEFT, padx=(10, 10))
 
         # Выбор режима оптимизации
         self.optimization_combobox = CTkComboBox(
@@ -1734,7 +1734,6 @@ class GlassCuttingTab(CTkFrame):
         if self.groups:
             self.display_cutting_plan(0)
 
-
     def draw_grid(self, group, scale):
         """Рисует сетку с шагом 1000 мм"""
         grid_color = "#cccccc"
@@ -1748,13 +1747,14 @@ class GlassCuttingTab(CTkFrame):
                 x_pos, self.canvas_offset_y + group['height'] * scale,
                 fill=grid_color, dash=(2, 2)
             )
-            # Подписи осей X
+            # Подписи осей X - сдвигаем вправо и вверх
             if x > 0:
                 self.card_canvas.create_text(
-                    x_pos, self.canvas_offset_y + 10,
+                    x_pos + 35 * scale,  # Сдвиг вправо на 5 единиц масштаба
+                    self.canvas_offset_y + 15 * scale,  # Сдвиг вверх на 5 единиц масштаба
                     text=f"{x} мм",
                     font=("Arial", 8),
-                    anchor=tk.N
+                    anchor=tk.NW  # Якорь в северо-западном углу
                 )
 
         # Горизонтальные линии
@@ -1765,13 +1765,14 @@ class GlassCuttingTab(CTkFrame):
                 self.canvas_offset_x + group['width'] * scale, y_pos,
                 fill=grid_color, dash=(2, 2)
             )
-            # Подписи осей Y
+            # Подписи осей Y - сдвигаем вниз и влево
             if y > 0:
                 self.card_canvas.create_text(
-                    self.canvas_offset_x + 10, y_pos,
+                    self.canvas_offset_x + 15 * scale,  # Сдвиг вправо на 5 единиц масштаба
+                    y_pos + 15 * scale,  # Сдвиг вниз на 5 единиц масштаба
                     text=f"{y} мм",
                     font=("Arial", 8),
-                    anchor=tk.W
+                    anchor=tk.NW  # Якорь в северо-западном углу
                 )
 
     def draw_background(self, group, scale):
@@ -1812,7 +1813,7 @@ class GlassCuttingTab(CTkFrame):
         if (y2 - y1) > 50 * scale:
             font_size = max(8, min(12, int((y2 - y1) / 15)))
             self.card_canvas.create_text(
-                x1 + 15 * scale, (y1 + y2) / 2 + 5 * scale,
+                x1 + 55 * scale, (y1 + y2) / 2 + 85 * scale,
                 text=f"{item['height']} мм",
                 font=("Arial", font_size),
                 fill="black",

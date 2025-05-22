@@ -30,19 +30,28 @@ class AuthWindow(CTk):
         self.entry_login.bind("<Return>", lambda event: self.entry_password.focus())
 
     def authenticate(self):
-        username = self.entry_login.get()
-        password = self.entry_password.get()
+        username = self.entry_login.get().strip()
+        password = self.entry_password.get().strip()
+
+        if not username or not password:
+            messagebox.showerror("Ошибка", "Логин и пароль не могут быть пустыми")
+            return
 
         result = check_credentials(username, password)
         if result is True:
             self.destroy()
-            self.parent.deiconify()  # Показываем главное окно
+            self.parent.deiconify()
         elif result == "wrong_password":
             messagebox.showerror("Ошибка", "Неверный пароль.")
+            self.entry_password.delete(0, 'end')
+            self.entry_password.focus()
         elif result == "no_user":
             messagebox.showerror("Ошибка", "Пользователь не найден.")
+            self.entry_login.delete(0, 'end')
+            self.entry_password.delete(0, 'end')
+            self.entry_login.focus()
 
     def on_close(self):
         if messagebox.askyesno("Выход", "Вы уверены, что хотите выйти?"):
             self.destroy()
-            self.parent.destroy()  # Закрываем главное окно, чтобы программа завершилась корректно
+            self.parent.destroy()
