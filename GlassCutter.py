@@ -1,4 +1,5 @@
 import hashlib
+import re
 
 import time
 import tkinter as tk
@@ -65,6 +66,7 @@ class GlassCuttingTab(CTkFrame):
         # Левая панель
         self.left_frame = CTkFrame(self.main_paned, width=self.side_panels_width)
         self.main_paned.add(self.left_frame, minsize=150)
+        self.left_frame.pack_propagate(False)
 
         # Разделитель для левой панели
         # self.left_separator = ttk.Separator(self, orient="vertical")
@@ -74,18 +76,47 @@ class GlassCuttingTab(CTkFrame):
         for child in self.left_frame.winfo_children():
             child.bind("<Button-3>", lambda e: "break")
 
-        # Добавляем поля для ввода размеров листа стекла
-        self.label_sheet_width = CTkLabel(self.left_frame, text="Ширина листа стекла (мм):")
+        # Контейнер под поля размеров стекла
+        self.sheet_size_frame = CTkFrame(self.left_frame)
+        self.sheet_size_frame.pack(fill=tk.X, pady=(10, 10))
+
+        self.label_sheet_width = CTkLabel(self.sheet_size_frame, text="Ширина листа стекла (мм):")
         self.label_sheet_width.pack(pady=5)
-        self.entry_sheet_width = CTkEntry(self.left_frame, width=100)
+        self.entry_sheet_width = CTkEntry(self.sheet_size_frame, width=100)
         self.entry_sheet_width.insert(0, "6000")
         self.entry_sheet_width.pack(pady=5)
 
-        self.label_sheet_height = CTkLabel(self.left_frame, text="Высота листа стекла (мм):")
+        self.label_sheet_height = CTkLabel(self.sheet_size_frame, text="Высота листа стекла (мм):")
         self.label_sheet_height.pack(pady=5)
-        self.entry_sheet_height = CTkEntry(self.left_frame, width=100)
+        self.entry_sheet_height = CTkEntry(self.sheet_size_frame, width=100)
         self.entry_sheet_height.insert(0, "6000")
-        self.entry_sheet_height.pack(padx=5)
+        self.entry_sheet_height.pack(padx=5, pady=(0, 10))
+
+        # Список заказов (растягиваемый до самого низа)
+        self.order_list_frame = CTkFrame(self.left_frame)
+        self.order_list_frame.pack(fill=tk.BOTH, expand=True)
+        self.order_list_frame.configure(fg_color="#333333")
+
+        self.order_tree = ttk.Treeview(self.order_list_frame, height=15, show="tree")
+        self.order_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.scrollbar = CTkScrollbar(self.order_list_frame)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scrollbar.configure(command=self.order_tree.yview)
+        self.order_tree.configure(yscrollcommand=self.scrollbar.set)
+
+        # Настройка стиля Treeview
+        self.style = ttk.Style()
+        self.style.layout("Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
+        self.style.configure("Treeview",
+                             background="#333333",
+                             foreground="white",
+                             fieldbackground="#333333",
+                             font=('Arial', 12))
+        self.style.map('Treeview', background=[('selected', '#0078d7')])
+
+        # Словарь для хранения соответствия между ID элементов и узлами дерева
+        self.order_items_map = {}
 
         # Центральная область
         self.center_frame = CTkFrame(self.main_paned)
@@ -177,8 +208,20 @@ class GlassCuttingTab(CTkFrame):
 
         self.card_list_frame = CTkFrame(self.right_frame)
         self.card_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        self.card_list_frame.configure(fg_color="#333333")
 
-        self.card_listbox = tk.Listbox(self.card_list_frame, height=15, bg="#333333", fg="white", font=("Arial", 12))
+        self.card_listbox = tk.Listbox(
+            self.card_list_frame,
+            height=15,
+            bg="#333333",
+            fg="white",
+            font=("Arial", 12),
+            highlightthickness=0,  # убирает рамку
+            borderwidth=0,  # убирает рамку у Listbox
+            relief="flat",  # отключает рельефный край
+            selectbackground="#0078d7",
+            selectforeground="white"
+        )
         self.card_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.scrollbar_cards = CTkScrollbar(self.card_list_frame)
@@ -189,18 +232,6 @@ class GlassCuttingTab(CTkFrame):
         # Метка для неиспользованной области
         self.unused_label = CTkLabel(self.center_frame, text="")
         self.unused_label.pack(anchor='w', padx=10, pady=5)
-
-        # Список заказов (стеклопакетов)
-        self.order_list_frame = CTkFrame(self.left_frame)
-        self.order_list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-
-        self.scrollbar = CTkScrollbar(self.order_list_frame)
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.order_listbox = tk.Listbox(self.order_list_frame, yscrollcommand=self.scrollbar.set, height=15,
-                                        bg="#333333", fg="white", font=("Arial", 12))
-        self.order_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.scrollbar.configure(command=self.order_listbox.yview)
 
         # Контекстное меню
         self.context_menu = tk.Menu(self.card_canvas, tearoff=0)
@@ -425,8 +456,12 @@ class GlassCuttingTab(CTkFrame):
             print(f"Ошибка при изменении размера: {e}")
 
     def update_orders_list(self):
-        """Обновляет список заказов из базы данных, исключая завершенные"""
-        self.order_listbox.delete(0, tk.END)  # Очищаем текущий список
+        """Обновляет список заказов с группировкой по номеру заказа и типу окна"""
+        # Очищаем текущее дерево
+        for item in self.order_tree.get_children():
+            self.order_tree.delete(item)
+
+        self.order_items_map.clear()
 
         # Получаем заказы, исключая завершенные
         orders = get_production_orders()
@@ -434,21 +469,48 @@ class GlassCuttingTab(CTkFrame):
         if not orders:
             return
 
+        # Группируем заказы по ID и типу окна
+        order_groups = defaultdict(lambda: defaultdict(list))
         for order in orders:
             order_id = order[0]
             status = order[-1]
 
-            # Пропускаем завершенные заказы
             if status.lower() == "завершен":
                 continue
 
             windows = get_windows_for_production_order(order_id)
-
             for window in windows:
                 window_id, window_type, width, height, quantity = window
-                for _ in range(quantity):
-                    order_text = f"Заказ {order_id}: {width}x{height} ({window_type})"
-                    self.order_listbox.insert(tk.END, order_text)
+                for seq in range(1, quantity + 1):
+                    order_groups[order_id][window_type].append({
+                        'order_id': order_id,
+                        'window_id': window_id,
+                        'width': width,
+                        'height': height,
+                        'type': window_type,
+                        'sequence': seq
+                    })
+
+        # Заполняем Treeview с двумя уровнями вложенности
+        for order_id, type_groups in order_groups.items():
+            # Создаем родительский узел для заказа
+            order_node = self.order_tree.insert("", "end", text=f"Заказ {order_id}",
+                                                values=("order", order_id))
+
+            # Добавляем узлы для каждого типа окна
+            for window_type, items in type_groups.items():
+                type_node = self.order_tree.insert(order_node, "end",
+                                                   text=window_type,
+                                                   values=("type", order_id, window_type))
+
+                counter = 1  # Счётчик для текущего типа окна
+                for item in items:
+                    item_id = f"{item['order_id']}-{counter}"
+                    node = self.order_tree.insert(type_node, "end",
+                                                  text=f"(№{counter}) {item['width']}×{item['height']} мм",
+                                                  values=("item", item_id, item['type']))
+                    self.order_items_map[item_id] = node
+                    counter += 1
 
     def load_orders_from_db(self):
         """Алиас для update_orders_list для обратной совместимости"""
@@ -757,12 +819,12 @@ class GlassCuttingTab(CTkFrame):
             self.clear_selection()
 
     def highlight_order_in_list(self, item_id):
-        """Подсвечивает заказ, соответствующий item['id'] и типу карты"""
-        # Сброс цветов
-        for i in range(self.order_listbox.size()):
-            self.order_listbox.itemconfig(i, bg="#333333", fg="white")
+        """Подсвечивает заказ в дереве заказов"""
+        # Сбрасываем текущее выделение
+        for item in self.order_tree.selection():
+            self.order_tree.selection_remove(item)
 
-        # Проверка формата ID
+        # Проверяем формат ID
         parts = item_id.split('-')
         if len(parts) != 2:
             return
@@ -770,28 +832,24 @@ class GlassCuttingTab(CTkFrame):
         target_order_id = parts[0]
         target_sequence = int(parts[1])
 
-        # Получаем текущий тип карты раскроя
-        if not self.card_listbox.curselection():
-            return
-        group_index = self.card_listbox.curselection()[0]
-        group_type = self.groups[group_index]['type']
+        # Ищем нужный узел в дереве
+        for order_node in self.order_tree.get_children():
+            order_values = self.order_tree.item(order_node, "values")
+            if order_values and order_values[1] == target_order_id:
+                # Раскрываем заказ
+                self.order_tree.item(order_node, open=True)
 
-        current_count = 0
-        for i in range(self.order_listbox.size()):
-            text = self.order_listbox.get(i)
+                # Ищем в типах окон
+                for type_node in self.order_tree.get_children(order_node):
+                    for item_node in self.order_tree.get_children(type_node):
+                        item_values = self.order_tree.item(item_node, "values")
+                        if item_values and item_values[1] == item_id:
+                            # Подсвечиваем элемент и раскрываем путь к нему
+                            self.order_tree.selection_add(item_node)
+                            self.order_tree.see(item_node)
+                            self.order_tree.item(type_node, open=True)
+                            return
 
-            # Проверяем совпадение по order_id и типу
-            if f"Заказ {target_order_id}:" in text and f"({group_type})" in text:
-                current_count += 1
-                if current_count == target_sequence:
-                    # Подсвечиваем строку
-                    self.order_listbox.itemconfig(i, bg="#0078d7", fg="white")
-
-                    # Прокручиваем к ней
-                    self.order_listbox.see(i)
-
-                    # Не вызываем .activate(i) или .selection_set(i), чтобы не сбрасывать фокус с canvas
-                    break
     def canvas_to_real_coords(self, x, y):
         """Преобразует координаты холста в реальные координаты с учетом масштаба и смещения"""
         if not self.groups or not self.card_listbox.curselection():
@@ -959,40 +1017,35 @@ class GlassCuttingTab(CTkFrame):
             messagebox.showerror("Ошибка", "Недостаточно места для поворота элемента")
 
     def select_order_in_list(self, order_id):
-        try:
-            if getattr(self, "_selecting_order", False):
-                return
+        """Выбирает заказ в списке (аналог старого метода)"""
+        parts = str(order_id).split('-')
+        if len(parts) < 2:
+            return
 
-            self._selecting_order = True
+        target_order_id = parts[0]
+        target_sequence = int(parts[1]) if len(parts) > 1 else 1
 
-            # Временно отключим обработчик выбора
-            self.order_listbox.unbind('<<ListboxSelect>>')
+        # Ищем заказ в дереве
+        for order_node in self.order_tree.get_children():
+            order_values = self.order_tree.item(order_node, "values")
+            if order_values and order_values[1] == target_order_id:
+                # Раскрываем заказ
+                self.order_tree.item(order_node, open=True)
 
-            self.order_listbox.selection_clear(0, tk.END)
-
-            parts = str(order_id).split('-')
-            if len(parts) < 2:
-                return
-
-            target_order_id = parts[0]
-            target_sequence = int(parts[1]) if len(parts) > 1 else 1
-
-            for i in range(self.order_listbox.size()):
-                item_text = self.order_listbox.get(i)
-                if f"Заказ {target_order_id}:" in item_text:
-                    selected_index = i + target_sequence - 1
-                    if selected_index < self.order_listbox.size():
-                        self.order_listbox.selection_set(selected_index)
-                        self.order_listbox.see(selected_index)
-                        self.order_listbox.activate(selected_index)
-                    break
-
-        except Exception as e:
-            print(f"Ошибка при выборе заказа: {e}")
-        finally:
-            # Возвращаем обработчик
-            self.order_listbox.bind('<<ListboxSelect>>', self.on_card_select)
-            self._selecting_order = False
+                # Ищем нужный элемент во всех типах
+                for type_node in self.order_tree.get_children(order_node):
+                    children = self.order_tree.get_children(type_node)
+                    for idx, item_node in enumerate(children, 1):
+                        item_values = self.order_tree.item(item_node, "values")
+                        if item_values and item_values[0] == "item":
+                            # Проверяем sequence из текста
+                            text = self.order_tree.item(item_node, "text")
+                            seq_match = re.search(r'№(\d+)', text)
+                            if seq_match and int(seq_match.group(1)) == target_sequence:
+                                self.order_tree.selection_set(item_node)
+                                self.order_tree.see(item_node)
+                                self.order_tree.item(type_node, open=True)
+                                return
 
     def get_current_scale(self, group):
         """Возвращает текущий масштаб отображения с учетом зума"""
@@ -1005,24 +1058,6 @@ class GlassCuttingTab(CTkFrame):
 
         # Применяем текущий масштаб
         return base_scale * self.current_zoom
-
-    def load_orders_from_db(self):
-        """Загружает стеклопакеты из production orders с сохранением типа"""
-        self.order_listbox.delete(0, tk.END)
-        orders = get_production_orders()
-        if not orders:
-            return
-
-        for order in orders:
-            order_id = order[0]
-            windows = get_windows_for_production_order(order_id)
-
-            for window in windows:
-                window_id, window_type, width, height, quantity = window
-                for _ in range(quantity):
-                    # Сохраняем тип в тексте заказа
-                    order_text = f"Заказ {order_id}: {width}x{height} ({window_type})"
-                    self.order_listbox.insert(tk.END, order_text)
 
     def optimize_cutting(self):
         """Запускает оптимизацию с выбранным режимом"""
@@ -1470,21 +1505,6 @@ class GlassCuttingTab(CTkFrame):
         else:
             print(f"\nВсего неиспользованных элементов: {total_unused}")
 
-    def _mark_unused_orders(self, unused_elements):
-        """Помечает неиспользованные заказы в интерфейсе"""
-        # Собираем все неиспользованные ID заказов
-        unused_ids = set()
-        for items in unused_elements.values():
-            for item in items:
-                unused_ids.add(item['original']['order_id'] + "-" + item['original']['window_id'])
-
-        # Помечаем элементы в интерфейсе
-        for i in range(self.order_listbox.size()):
-            order_id = self.order_listbox.get(i)
-            if order_id in unused_ids:
-                self.order_listbox.itemconfig(i, {'bg': 'lightyellow', 'fg': 'red'})
-                self.order_listbox.itemconfig(i, {'tags': ['unused']})
-
     def _print_sheet_summary(self, sheet_index, items, used_area, total_area):
         """Визуализация заполнения карты раскроя"""
         fill_ratio = used_area / total_area
@@ -1599,34 +1619,43 @@ class GlassCuttingTab(CTkFrame):
         return packed_items, area_used
 
     def _fetch_orders(self):
-        """Получение незавершенных заказов из базы данных"""
+        """Получение заказов для оптимизации (адаптировано под новую структуру)"""
         orders = []
-        production_orders = get_production_orders()
 
-        if not production_orders:
-            return []
+        for order_node in self.order_tree.get_children():
+            for type_node in self.order_tree.get_children(order_node):
+                for item_node in self.order_tree.get_children(type_node):
+                    item_values = self.order_tree.item(item_node, "values")
+                    if not item_values or item_values[0] != "item":
+                        continue
 
-        for order in production_orders:
-            order_id = order[0]
-            status = order[-1]  # Предполагаем, что статус находится во втором поле
+                    item_id = item_values[1]
+                    parts = item_id.split('-')
+                    if len(parts) != 2:
+                        continue
 
-            # Пропускаем завершенные заказы
-            if status.lower() == "завершен":
-                continue
+                    order_id = parts[0]
+                    sequence = int(parts[1])
+                    window_type = item_values[2]
 
-            windows = get_windows_for_production_order(order_id)
-            for window in windows:
-                window_id, window_type, width, height, quantity = window
-                for _ in range(quantity):
+                    # Получаем размеры из текста узла
+                    text = self.order_tree.item(item_node, "text")
+                    size_match = re.search(r'(\d+)×(\d+)', text)
+                    if not size_match:
+                        continue
+
+                    width = int(size_match.group(1))
+                    height = int(size_match.group(2))
+
                     orders.append({
                         'order_id': order_id,
-                        'window_id': window_id,
+                        'window_id': sequence,
                         'width': width,
                         'height': height,
                         'type': window_type
                     })
-        return orders
 
+        return orders
 
     def _item_to_tuple(self, item):
         """Преобразование элемента в хешируемый кортеж"""
@@ -1803,7 +1832,7 @@ class GlassCuttingTab(CTkFrame):
             font_size = max(8, min(12, int((x2 - x1) / 15)))
             self.card_canvas.create_text(
                 (x1 + x2) / 2, y1 + 10 * scale,
-                text=f"{item['width']} мм",
+                text=f"{item['width']}",
                 font=("Arial", font_size),
                 fill="black",
                 anchor="n",
@@ -1814,7 +1843,7 @@ class GlassCuttingTab(CTkFrame):
             font_size = max(8, min(12, int((y2 - y1) / 15)))
             self.card_canvas.create_text(
                 x1 + 55 * scale, (y1 + y2) / 2 + 85 * scale,
-                text=f"{item['height']} мм",
+                text=f"{item['height']}",
                 font=("Arial", font_size),
                 fill="black",
                 anchor="w",
