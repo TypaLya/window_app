@@ -106,14 +106,14 @@ class GlassCuttingTab(CTkFrame):
         self.order_tree.configure(yscrollcommand=self.scrollbar.set)
 
         # Настройка стиля Treeview
-        self.style = ttk.Style()
-        self.style.layout("Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
-        self.style.configure("Treeview",
-                             background="#333333",
-                             foreground="white",
-                             fieldbackground="#333333",
-                             font=('Arial', 12))
-        self.style.map('Treeview', background=[('selected', '#0078d7')])
+        # self.style = ttk.Style()
+        # self.style.layout("Treeview", [('Treeview.treearea', {'sticky': 'nswe'})])
+        # self.style.configure("Treeview",
+        #                      background="#333333",
+        #                      foreground="white",
+        #                      fieldbackground="#333333",
+        #                      font=('Arial', 12))
+        # self.style.map('Treeview', background=[('selected', '#0078d7')])
 
         # Словарь для хранения соответствия между ID элементов и узлами дерева
         self.order_items_map = {}
