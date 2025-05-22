@@ -9,6 +9,7 @@ ENV/
 env.bak/
 venv.bak/
 warehouse_table
+orders_table
 *.xls
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
