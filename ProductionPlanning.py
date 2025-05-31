@@ -460,106 +460,100 @@ class ProductionPlanningTab(CTkFrame):
             self.after(100, self.update_calendar)
 
     def on_resize(self, event):
-        """Обработчик изменения размеров"""
-        if self.winfo_ismapped():  # Проверяем, что вкладка видима
-            self.update_calendar()
+        """Обработчик изменения размеров окна"""
+        if self.winfo_ismapped():
+            self.after(100, self.update_calendar)
 
     def update_calendar(self):
-        """Обновление отображения календаря"""
-        if not self.winfo_ismapped():  # Не обновляем, если вкладка не видна
+        """Адаптивный календарь с правильным масштабированием"""
+        if not self.winfo_ismapped() or not self.calendar_canvas.winfo_exists():
             return
 
-        if not self.calendar_canvas.winfo_exists():
-            return
-
+        # Очищаем и настраиваем холст
         self.calendar_canvas.delete("all")
-        self.month_label.configure(text=f"{self.current_month}.{self.current_year}")
+        month_names = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                       "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+        self.month_label.configure(text=f"{month_names[self.current_month]} {self.current_year}")
 
-        # Получаем все заказы
-        orders = get_production_orders()
-
-        # Определяем первый и последний день месяца
-        first_day = datetime(self.current_year, self.current_month, 1).date()
-        last_day = datetime(self.current_year, self.current_month + 1, 1).date() - timedelta(days=1)
-
-        # Получаем текущую дату
-        today = datetime.now().date()
-
-        # Определяем дни недели для первого и последнего дня месяца
-        start_weekday = first_day.weekday()  # 0-пн, 6-вс
-        total_days = last_day.day
-
-        # Настройки отображения
+        # Получаем актуальные размеры
         canvas_width = self.calendar_canvas.winfo_width()
         canvas_height = self.calendar_canvas.winfo_height()
-        if canvas_width < 10 or canvas_height < 10:  # Минимальные размеры
-            return
-        day_width = canvas_width / 7
-        day_height = canvas_height / 6  # Максимум 6 недель в месяце
 
-        # Рисуем заголовок с днями недели
+        # Минимальные размеры
+        if canvas_width < 300 or canvas_height < 200:
+            canvas_width = 700
+            canvas_height = 500
+            self.calendar_canvas.config(width=canvas_width, height=canvas_height)
+
+        # Рассчитываем дни месяца
+        first_day = datetime(self.current_year, self.current_month, 1).date()
+        if self.current_month == 12:
+            last_day = datetime(self.current_year + 1, 1, 1).date() - timedelta(days=1)
+        else:
+            last_day = datetime(self.current_year, self.current_month + 1, 1).date() - timedelta(days=1)
+
+        total_days = last_day.day
+        start_weekday = first_day.weekday()
+        today = datetime.now().date()
+
+        # Рассчитываем необходимое количество строк (5 или 6 недель)
+        num_weeks = 6 if (start_weekday + total_days) > 35 else 5
+
+        # Размеры ячеек с отступами
+        header_height = 30
+        day_height = (canvas_height - header_height) / num_weeks
+        day_width = canvas_width / 7
+
+        # Рисуем заголовок дней недели
         days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
         for i, day in enumerate(days):
             x = i * day_width
-            self.calendar_canvas.create_rectangle(x, 0, x + day_width, day_height, fill="#444444", outline="black")
-            self.calendar_canvas.create_text(x + day_width / 2, day_height / 2, text=day, fill="white",
-                                             font=("Arial", 10))
+            self.calendar_canvas.create_rectangle(
+                x, 0, x + day_width, header_height,
+                fill="#444444", outline="black"
+            )
+            self.calendar_canvas.create_text(
+                x + day_width / 2, header_height / 2,
+                text=day, fill="white", font=("Arial", 10, "bold")
+            )
 
-        # Рисуем сетку календаря
+        # Получаем все заказы один раз
+        all_orders = get_production_orders()
+
+        # Рисуем дни месяца
         current_day = 1
-        for week in range(6):
+        for week in range(num_weeks):
             for day in range(7):
                 if (week == 0 and day < start_weekday) or current_day > total_days:
                     continue
 
                 x = day * day_width
-                y = (week + 1) * day_height
-
-                # Определяем цвет фона для текущего дня
+                y = header_height + week * day_height
                 current_date = datetime(self.current_year, self.current_month, current_day).date()
-                if current_date == today:
-                    day_color = "#8ab4f8"  # Голубой цвет для текущего дня
-                else:
-                    day_color = "#555555"  # Стандартный цвет для других дней
 
-                # Рисуем ячейку дня
+                # Ячейка дня
                 self.calendar_canvas.create_rectangle(
                     x, y, x + day_width, y + day_height,
-                    fill=day_color, outline="black"
+                    fill="#8ab4f8" if current_date == today else "#555555",
+                    outline="black"
                 )
 
-                # Подпись числа
+                # Число дня
                 self.calendar_canvas.create_text(
                     x + 5, y + 5,
                     text=str(current_day),
                     anchor="nw", fill="white", font=("Arial", 10)
                 )
 
-                # Проверяем заказы на эту дату
-                day_orders = [o for o in orders
+                # Фильтруем заказы для текущей даты
+                day_orders = [o for o in all_orders
                               if datetime.strptime(o[3], "%Y-%m-%d").date() == current_date]
 
                 if day_orders:
-                    # Разделяем заказы на выполненные и невыполненные
-                    completed_orders = [o for o in day_orders if o[5] == "Завершен"]
-                    active_orders = [o for o in day_orders if o[5] != "Завершен"]
+                    active = sum(1 for o in day_orders if o[5] != "Завершен")
+                    completed = sum(1 for o in day_orders if o[5] == "Завершен")
 
-                    # Рисуем индикаторы
-                    if completed_orders:
-                        # Зеленый для выполненных
-                        self.calendar_canvas.create_oval(
-                            x + day_width - 15, y + 5,
-                            x + day_width - 5, y + 15,
-                            fill="#4CAF50", outline="black"
-                        )
-                        self.calendar_canvas.create_text(
-                            x + day_width - 10, y + 10,
-                            text=str(len(completed_orders)),
-                            fill="white", font=("Arial", 8)
-                        )
-
-                    if active_orders:
-                        # Красный для активных
+                    if active:
                         self.calendar_canvas.create_oval(
                             x + day_width - 35, y + 5,
                             x + day_width - 25, y + 15,
@@ -567,40 +561,88 @@ class ProductionPlanningTab(CTkFrame):
                         )
                         self.calendar_canvas.create_text(
                             x + day_width - 30, y + 10,
-                            text=str(len(active_orders)),
-                            fill="white", font=("Arial", 8)
+                            text=str(active), fill="white", font=("Arial", 8)
+                        )
+
+                    if completed:
+                        self.calendar_canvas.create_oval(
+                            x + day_width - 15, y + 5,
+                            x + day_width - 5, y + 15,
+                            fill="#4CAF50", outline="black"
+                        )
+                        self.calendar_canvas.create_text(
+                            x + day_width - 10, y + 10,
+                            text=str(completed), fill="white", font=("Arial", 8)
                         )
 
                 current_day += 1
 
+    def show_prev_month(self):
+        """Показывает предыдущий месяц"""
+        self.current_month -= 1
+        if self.current_month < 1:
+            self.current_month = 12
+            self.current_year -= 1
+        self.update_calendar()
+
+    def show_next_month(self):
+        """Показывает следующий месяц"""
+        self.current_month += 1
+        if self.current_month > 12:
+            self.current_month = 1
+            self.current_year += 1
+        self.update_calendar()
+
     def on_calendar_click(self, event):
-        """Обработчик клика по календарю"""
+        """Корректный обработчик клика по календарю"""
+        # Получаем размеры холста
         canvas_width = self.calendar_canvas.winfo_width()
         canvas_height = self.calendar_canvas.winfo_height()
-        day_width = canvas_width / 7
-        day_height = canvas_height / 6
 
-        # Определяем координаты клика
-        day_col = int(event.x // day_width)
-        day_row = int(event.y // day_height)
-
-        # Если клик в заголовке или вне дней месяца
-        if day_row == 0 or day_col < 0 or day_col > 6:
-            return
-
-        # Получаем первый день месяца
+        # Рассчитываем параметры отображения
         first_day = datetime(self.current_year, self.current_month, 1).date()
         start_weekday = first_day.weekday()  # 0-пн, 6-вс
 
-        # Вычисляем день месяца
-        day_num = (day_row - 1) * 7 + day_col - start_weekday + 1
-        last_day = (datetime(self.current_year, self.current_month + 1, 1) - timedelta(days=1)).day
+        # Корректное определение последнего дня месяца
+        if self.current_month == 12:
+            last_day = datetime(self.current_year + 1, 1, 1).date() - timedelta(days=1)
+        else:
+            last_day = datetime(self.current_year, self.current_month + 1, 1).date() - timedelta(days=1)
 
-        if day_num < 1 or day_num > last_day:
+        total_days = last_day.day
+        num_weeks = 6 if (start_weekday + total_days) > 35 else 5
+
+        # Вычисляем размеры ячеек
+        header_height = 30  # Высота строки с днями недели
+        day_width = canvas_width / 7
+        day_height = (canvas_height - header_height) / num_weeks
+
+        # Определяем координаты клика
+        click_y = event.y - header_height  # Корректируем с учетом заголовка
+
+        # Пропускаем клики в заголовке
+        if click_y < 0:
             return
 
-        # Получаем заказы на эту дату
+        # Определяем строку и столбец
+        day_col = int(event.x // day_width)
+        day_row = int(click_y // day_height)
+
+        # Пропускаем клики вне сетки дней
+        if day_col < 0 or day_col > 6 or day_row < 0:
+            return
+
+        # Вычисляем номер дня
+        day_num = day_row * 7 + day_col - start_weekday + 1
+
+        # Проверяем, что день существует в этом месяце
+        if day_num < 1 or day_num > total_days:
+            return
+
+        # Получаем корректную дату
         current_date = datetime(self.current_year, self.current_month, day_num).date()
+
+        # Получаем заказы на эту дату
         orders = get_production_orders()
         day_orders = [o for o in orders
                       if datetime.strptime(o[3], "%Y-%m-%d").date() == current_date]
@@ -609,52 +651,201 @@ class ProductionPlanningTab(CTkFrame):
             messagebox.showinfo("Информация", f"На {current_date.strftime('%d.%m.%Y')} нет заказов")
             return
 
-        # Создаем окно с информацией о заказах
-        self.show_day_orders(day_orders, current_date)
+        # Показываем диалог выбора действия
+        self.show_date_actions(current_date)
 
-    def show_day_orders(self, orders, date):
-        """Показывает заказы на выбранную дату"""
+    def show_date_actions(self, date):
+        """Диалог выбора действия для даты"""
         dialog = tk.Toplevel(self)
-        dialog.title(f"Заказы на {date.strftime('%d.%m.%Y')}")
-        dialog.geometry("500x400")
+        dialog.title(f"Действия для {date.strftime('%d.%m.%Y')}")
+        dialog.geometry("300x150")
+        dialog.grab_set()  # Модальное окно
 
-        # Список заказов
-        orders_frame = CTkFrame(dialog)
-        orders_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        CTkLabel(dialog, text="Что вы хотите просмотреть?").pack(pady=10)
 
-        scrollbar = CTkScrollbar(orders_frame)
+        btn_frame = CTkFrame(dialog)
+        btn_frame.pack(pady=10)
+
+        # Кнопки выбора
+        CTkButton(btn_frame, text="Заказы",
+                  command=lambda: [self.show_orders_for_date(date), dialog.destroy()]).pack(side=tk.LEFT, padx=5)
+
+        CTkButton(btn_frame, text="Материалы",
+                  command=lambda: [self.show_materials_for_date(date), dialog.destroy()]).pack(side=tk.LEFT, padx=5)
+
+
+    def show_materials_for_date(self, date):
+        """Показывает таблицу материалов для выбранной даты"""
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Материалы на {date.strftime('%d.%m.%Y')}")
+        dialog.geometry("800x600")
+
+        # Создаем фрейм для таблицы
+        frame = CTkFrame(dialog)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Создаем таблицу
+        columns = ("material", "required", "in_stock")
+        tree = ttk.Treeview(frame, columns=columns, show="headings")
+
+        # Настраиваем столбцы
+        tree.heading("material", text="Материал")
+        tree.heading("required", text="Требуется")
+        tree.heading("in_stock", text="На складе")
+
+        tree.column("material", width=400)
+        tree.column("required", width=150, anchor='center')
+        tree.column("in_stock", width=150, anchor='center')
+
+        # Настраиваем тег для недостающих материалов
+        tree.tag_configure('not_enough', background='#ffcccc')
+
+        # Получаем все заказы на эту дату
+        orders = [o for o in get_production_orders()
+                  if datetime.strptime(o[3], "%Y-%m-%d").date() == date]
+
+        # Собираем все материалы для этих заказов
+        materials_sum = {}
+        for order in orders:
+            materials = get_materials_for_production_order(order[0])
+            for mat in materials:
+                mat_type = mat[1]
+                amount = mat[2]
+                dimension = mat[3]
+
+                if mat_type not in materials_sum:
+                    materials_sum[mat_type] = {
+                        'amount': 0.0,
+                        'dimension': dimension
+                    }
+                materials_sum[mat_type]['amount'] += amount
+
+        # Функция поиска материала на складе
+        def find_material_on_warehouse(material_name):
+            warehouses = [
+                get_all_component_materials(),
+                get_all_film_materials(),
+                get_all_window_materials(),
+                get_all_triplex_materials(),
+                get_all_main_glass_materials(),
+                get_all_cutting_materials()
+            ]
+
+            for warehouse in warehouses:
+                for item in warehouse:
+                    if material_name.lower() in item[2].lower():
+                        balance = item[8] if len(item) > 8 else item[7]
+                        unit = item[3]
+                        try:
+                            return {
+                                'amount': float(balance) if balance else 0.0,
+                                'unit': unit
+                            }
+                        except (ValueError, TypeError):
+                            return {'amount': 0.0, 'unit': 'шт.'}
+            return None
+
+        # Заполняем таблицу
+        for mat_type, data in sorted(materials_sum.items()):
+            required = f"{round(data['amount'], 2)} {data['dimension']}"
+            warehouse = find_material_on_warehouse(mat_type)
+
+            if warehouse:
+                in_stock = f"{round(warehouse['amount'], 2)} {warehouse['unit']}"
+                # Проверяем, хватает ли материала
+                try:
+                    if float(data['amount']) > float(warehouse['amount']):
+                        tags = ('not_enough',)
+                    else:
+                        tags = ()
+                except ValueError:
+                    tags = ()
+            else:
+                in_stock = "Не найден"
+                tags = ('not_enough',)
+
+            tree.insert("", tk.END, values=(mat_type, required, in_stock), tags=tags)
+
+        # Добавляем скроллбар
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        # Упаковываем элементы
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        orders_listbox = tk.Listbox(
-            orders_frame,
-            bg="#333333",
-            fg="white",
-            font=("Arial", 12),
-            yscrollcommand=scrollbar.set
-        )
-        orders_listbox.pack(fill=tk.BOTH, expand=True)
-        scrollbar.configure(command=orders_listbox.yview)
+        # Кнопка закрытия
+        CTkButton(dialog, text="Закрыть", command=dialog.destroy).pack(pady=10)
 
-        # Заполняем список
+    def show_orders_for_date(self, date):
+        """Показывает список заказов на выбранную дату с правильными столбцами"""
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Заказы на {date.strftime('%d.%m.%Y')}")
+        dialog.geometry("900x600")
+
+        # Создаем фрейм для таблицы
+        frame = CTkFrame(dialog)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Создаем таблицу заказов с правильными столбцами
+        columns = ("id", "name", "customer", "deadline", "priority", "status")
+        tree = ttk.Treeview(frame, columns=columns, show="headings")
+
+        # Настраиваем столбцы
+        tree.heading("id", text="ID")
+        tree.heading("name", text="Название заказа")
+        tree.heading("customer", text="Заказчик")
+        tree.heading("deadline", text="Срок выполнения")
+        tree.heading("priority", text="Приоритет")
+        tree.heading("status", text="Статус")
+
+        tree.column("id", width=50, anchor='center')
+        tree.column("name", width=250)
+        tree.column("customer", width=200)
+        tree.column("deadline", width=100, anchor='center')
+        tree.column("priority", width=100, anchor='center')
+        tree.column("status", width=100, anchor='center')
+
+        # Получаем заказы на эту дату
+        orders = [o for o in get_production_orders()
+                  if datetime.strptime(o[3], "%Y-%m-%d").date() == date]
+
+        # Заполняем таблицу с правильным порядком данных
         for order in orders:
-            order_id, name, customer, deadline, priority, status = order
-            orders_listbox.insert(tk.END, f"{name} (Приоритет: {priority}, Статус: {status})")
+            # Форматируем дату для отображения
+            deadline = datetime.strptime(order[3], "%Y-%m-%d").strftime("%d.%m.%Y")
+            tree.insert("", tk.END, values=(
+                order[0],  # ID
+                order[1],  # Название
+                order[2],  # Заказчик
+                deadline,  # Срок выполнения
+                order[4],  # Приоритет
+                order[5]  # Статус
+            ))
 
-        # Кнопка просмотра
-        def view_order():
-            selection = orders_listbox.curselection()
-            if not selection:
+        # Добавляем скроллбар
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        # Упаковываем элементы
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Кнопка для просмотра деталей заказа
+        def view_order_details():
+            selected = tree.focus()
+            if not selected:
                 return
-
-            selected_order = orders[selection[0]]
-            self.show_order_details_by_id(selected_order[0])
+            order_id = tree.item(selected)['values'][0]
+            self.show_order_details_by_id(order_id)
             dialog.destroy()
 
-        button_frame = CTkFrame(dialog)
-        button_frame.pack(fill=tk.X, padx=10, pady=5)
+        # Кнопки управления
+        btn_frame = CTkFrame(dialog)
+        btn_frame.pack(pady=10)
 
-        CTkButton(button_frame, text="Просмотреть", command=view_order).pack(side=tk.LEFT, padx=5)
-        CTkButton(button_frame, text="Закрыть", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        CTkButton(btn_frame, text="Просмотреть детали", command=view_order_details).pack(side=tk.LEFT, padx=5)
+        CTkButton(btn_frame, text="Закрыть", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
 
     def show_order_details_by_id(self, order_id):
         """Показывает детали заказа по ID"""
@@ -681,23 +872,11 @@ class ProductionPlanningTab(CTkFrame):
                 # Загружаем стеклопакеты и материалы для этого заказа
                 self.load_windows_for_order(order_id)
                 self.load_materials_for_order(order_id)
+
+                # Обновляем данные склада для заказов на эту дату
+                self.load_warehouse_data()
                 break
 
-    def show_prev_month(self):
-        """Показывает предыдущий месяц"""
-        self.current_month -= 1
-        if self.current_month < 1:
-            self.current_month = 12
-            self.current_year -= 1
-        self.update_calendar()
-
-    def show_next_month(self):
-        """Показывает следующий месяц"""
-        self.current_month += 1
-        if self.current_month > 12:
-            self.current_month = 1
-            self.current_year += 1
-        self.update_calendar()
 
     def add_production_order(self):
         """Добавление нового производственного заказа"""
@@ -876,6 +1055,8 @@ class ProductionPlanningTab(CTkFrame):
                 # Загружаем связанные стеклопакеты
                 self.load_windows_for_order(order_id)
                 self.load_materials_for_order(order_id)
+
+                self.load_warehouse_data()
                 break
 
     def load_windows_for_order(self, order_id):
@@ -995,32 +1176,46 @@ class ProductionPlanningTab(CTkFrame):
             self.load_windows_for_order(self.current_order_id)
 
     def load_warehouse_data(self):
-        """Загрузка и отображение суммарных данных по материалам с учетом остатков на складе"""
+        """Автоматическая загрузка данных склада при выборе заказа"""
         # Очищаем таблицу
         for item in self.warehouse_tree.get_children():
             self.warehouse_tree.delete(item)
 
-        # Обновляем структуру таблицы
-        self.warehouse_tree['columns'] = ("type", "used", "in_stock")
-        self.warehouse_tree.heading("type", text="Материал")
-        self.warehouse_tree.heading("used", text="Используется")
-        self.warehouse_tree.heading("in_stock", text="На складе")
+        # Если нет выбранного заказа - показываем пустую таблицу
+        if not self.current_order_id:
+            return
 
-        self.warehouse_tree.column("type", width=250)
-        self.warehouse_tree.column("used", width=150, anchor='center')
-        self.warehouse_tree.column("in_stock", width=100, anchor='center')
-
-        # Создаем тег для выделения недостающих материалов
-        self.warehouse_tree.tag_configure('not_enough', background='#ffcccc')  # светло-красный фон
-
-        # Получаем все заказы
+        # Получаем информацию о текущем заказе
         orders = get_production_orders()
+        current_order = None
+        for order in orders:
+            if order[0] == self.current_order_id:
+                current_order = order
+                break
 
-        # Создаем словарь для хранения суммарных количеств
+        if not current_order:
+            return
+
+        # Получаем дату текущего заказа
+        try:
+            order_date = datetime.strptime(current_order[3], "%Y-%m-%d").date()
+            date_str = order_date.strftime("%d.%m.%Y")
+        except:
+            return
+
+        # Обновляем текст вкладки через Notebook
+        tab_index = self.details_notebook.index(self.warehouse_tab)
+        self.details_notebook.tab(tab_index, text=f"Склад (на {date_str})")
+
+        # Получаем все заказы на эту же дату
+        orders_on_date = [o for o in get_production_orders()
+                          if datetime.strptime(o[3], "%Y-%m-%d").date() == order_date]
+
+        # Создаем словарь для хранения суммарных количеств материалов
         materials_sum = {}
 
-        # Собираем данные по всем заказам
-        for order in orders:
+        # Собираем данные по всем заказам на эту дату
+        for order in orders_on_date:
             order_id = order[0]
             materials = get_materials_for_production_order(order_id)
 
@@ -1037,10 +1232,8 @@ class ProductionPlanningTab(CTkFrame):
 
                 materials_sum[mat_type]['amount'] += amount
 
-            # Функция для поиска материала на складах по частичному совпадению
-
+        # Функция для поиска материала на складах
         def find_material_on_warehouse(material_name):
-            # Получаем данные со всех складов
             warehouses = [
                 get_all_component_materials(),
                 get_all_film_materials(),
@@ -1050,13 +1243,12 @@ class ProductionPlanningTab(CTkFrame):
                 get_all_cutting_materials()
             ]
 
-            # Ищем частичное совпадение в названии материала
             for warehouse in warehouses:
                 for item in warehouse:
-                    warehouse_name = item[2]  # Название материала на складе
+                    warehouse_name = item[2]
                     if material_name.lower() in warehouse_name.lower():
-                        balance = item[8] if len(item) > 8 else item[7]  # Индекс может отличаться
-                        unit = item[3]  # Единица измерения
+                        balance = item[8] if len(item) > 8 else item[7]
+                        unit = item[3]
                         try:
                             return {
                                 'amount': float(balance) if balance else 0.0,
@@ -1064,45 +1256,33 @@ class ProductionPlanningTab(CTkFrame):
                             }
                         except (ValueError, TypeError):
                             return {'amount': 0.0, 'unit': 'шт.'}
-
             return None
 
-            # Сортируем материалы по алфавиту
-
+        # Сортируем материалы по алфавиту
         sorted_materials = sorted(materials_sum.items(), key=lambda x: x[0])
 
         # Добавляем данные в таблицу
         for mat_type, data in sorted_materials:
-            # Форматируем значение с единицей измерения
             used_value = f"{round(data['amount'], 3)} {data['dimension']}"
-
-            # Ищем материал на складах
             warehouse_material = find_material_on_warehouse(mat_type)
 
+            # Определяем стиль строки (красный если материала не хватает)
             tags = ()
-
             if warehouse_material:
-                stock_value = f"{round(warehouse_material['amount'], 3)} {warehouse_material['unit']}"
-
-                # Проверяем, хватает ли материала
                 try:
-                    # Сравниваем количество, игнорируя единицы измерения
-                    used_amount = float(data['amount'])
-                    stock_amount = float(warehouse_material['amount'])
-
-                    if used_amount > stock_amount:
+                    if float(data['amount']) > float(warehouse_material['amount']):
                         tags = ('not_enough',)
                 except ValueError:
                     pass
-            else:
-                stock_value = "Не найден"
-                tags = ('not_enough',)
+
+            stock_value = f"{round(warehouse_material['amount'], 3)} {warehouse_material['unit']}" if warehouse_material else "Не найден"
 
             self.warehouse_tree.insert("", tk.END,
-                                       values=(mat_type,
-                                               used_value,
-                                               stock_value),
+                                       values=(mat_type, used_value, stock_value),
                                        tags=tags)
+
+        # Настраиваем стиль для недостающих материалов
+        self.warehouse_tree.tag_configure('not_enough', background='#ffcccc')
 
     def load_materials_for_order(self, order_id):
         """Загрузка списка материалов для заказа с нумерацией"""
