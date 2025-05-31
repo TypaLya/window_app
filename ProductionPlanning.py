@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import openpyxl
 import xlrd
-from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkComboBox
+from customtkinter import CTkLabel, CTkEntry, CTkButton, CTkFrame, CTkScrollbar, CTkComboBox, CTkScrollableFrame
 from tkinter import messagebox
 from database import (add_production_order, get_production_orders,
                       update_production_order_status, delete_production_order,
@@ -738,14 +738,109 @@ class ProductionPlanningTab(CTkFrame):
         self.update_calendar()
 
     def load_production_orders(self):
-        """Загрузка списка производственных заказов"""
+        """Загрузка и отображение заказов с группировкой по датам и раскрытием"""
         orders = get_production_orders()
-        self.orders_listbox.delete(0, tk.END)
+
+        # Очистка старых виджетов
+        for widget in self.orders_frame.winfo_children():
+            widget.destroy()
+
+        self.scrollable_frame = CTkScrollableFrame(self.orders_frame, fg_color="transparent")
+        self.scrollable_frame.pack(fill=tk.BOTH, expand=True)
+
+        from collections import defaultdict
+        orders_by_date = defaultdict(list)
 
         for order in orders:
-            order_id, name, customer, deadline, priority, status = order
-            deadline_date = datetime.strptime(deadline, "%Y-%m-%d").strftime("%d.%m.%Y")
-            self.orders_listbox.insert(tk.END, f"{order_id}: {name} ({status})")
+            deadline_date = datetime.strptime(order[3], "%Y-%m-%d").date()
+            date_str = deadline_date.strftime("%d.%m.%Y")
+            orders_by_date[date_str].append(order)
+
+        self.order_frames = {}
+
+        for date_str in sorted(orders_by_date.keys(), key=lambda d: datetime.strptime(d, "%d.%m.%Y"), reverse=True):
+            order_list = orders_by_date[date_str]
+
+            # Обёртка под дату и список заказов
+            date_container = CTkFrame(self.scrollable_frame, fg_color="transparent")
+            date_container.pack(fill=tk.X, pady=(0, 5))
+
+            # Переменная: открыт ли список
+            expanded_var = tk.BooleanVar(value=False)
+
+            # Вложенный фрейм заказов
+            orders_subframe = CTkFrame(date_container, fg_color="transparent")
+
+            def toggle_orders(var, frame):
+                if var.get():
+                    frame.pack(fill=tk.X)
+                else:
+                    frame.pack_forget()
+
+            # Создание замыкания с текущими переменными
+            def make_toggle_callback(var, frame):
+                return lambda: [var.set(not var.get()), toggle_orders(var, frame)]
+
+            # Кнопка даты
+            date_btn = CTkButton(
+                date_container,
+                text=f"{date_str} • {len(order_list)} заказ(ов)",
+                command=make_toggle_callback(expanded_var, orders_subframe),
+                anchor="w",
+                fg_color="#3a3a3a",
+                hover_color="#4a4a4a",
+                corner_radius=5,
+                font=("Arial", 12, "bold"),
+                height=35
+            )
+            date_btn.pack(fill=tk.X)
+
+            # Открыть, если текущий заказ в этой дате
+            if any(str(o[0]) == str(self.current_order_id) for o in order_list):
+                expanded_var.set(True)
+                orders_subframe.pack(fill=tk.X)
+
+            # Добавление заказов
+            for order in sorted(order_list, key=lambda o: o[0]):
+                order_id, name, _, _, _, status = order
+
+                order_frame = CTkFrame(
+                    orders_subframe,
+                    fg_color="#1e88e5" if str(order_id) == str(self.current_order_id) else "#6e6e6e",
+                    height=35,
+                    corner_radius=5
+                )
+                order_frame.pack(fill=tk.X, padx=10, pady=2)
+
+                label = CTkLabel(
+                    order_frame,
+                    text=f"{order_id}: {name} • {status}",
+                    anchor="w",
+                    text_color="white",
+                    font=("Arial", 12)
+                )
+                label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+
+                def make_order_callback(oid):
+                    return lambda e=None: self.select_order(oid)
+
+                # Обработчики
+                order_frame.bind("<Button-1>", make_order_callback(order_id))
+                label.bind("<Button-1>", make_order_callback(order_id))
+
+                self.order_frames[order_id] = order_frame
+
+    def select_order(self, order_id):
+        """Выбор и отображение заказа без перезагрузки списка"""
+        # Убрать подсветку со всех
+        for oid, frame in self.order_frames.items():
+            frame.configure(fg_color="#1e88e5" if str(oid) == str(order_id) else "#6e6e6e")
+
+        # Обновить текущий выбранный ID
+        self.current_order_id = order_id
+
+        # Показать детали заказа
+        self.show_order_details_by_id(order_id)
 
     def show_order_details(self, event=None):
         """Отображение деталей выбранного заказа"""
@@ -1113,7 +1208,6 @@ class ProductionPlanningTab(CTkFrame):
             self.load_materials_for_order(self.current_order_id)
             self.load_warehouse_data()
 
-
     def change_order_status(self, new_status):
         """Изменение статуса заказа"""
         if not self.current_order_id:
@@ -1122,7 +1216,10 @@ class ProductionPlanningTab(CTkFrame):
 
         update_production_order_status(self.current_order_id, new_status)
         self.load_production_orders()
-        self.show_order_details(None)
+
+        if self.current_order_id:
+            self.show_order_details_by_id(self.current_order_id)
+
         self.update_calendar()
 
     def delete_order(self):
@@ -1134,16 +1231,22 @@ class ProductionPlanningTab(CTkFrame):
         if messagebox.askyesno("Подтверждение", "Удалить выбранный заказ?"):
             delete_production_order(self.current_order_id)
             self.load_production_orders()
+
+            # Очищаем детали заказа
             self.order_details_text.config(state=tk.NORMAL)
             self.order_details_text.delete(1.0, tk.END)
             self.order_details_text.config(state=tk.DISABLED)
-            self.current_order_id = None
 
-            # Очищаем таблицу стеклопакетов
+            # Очищаем таблицы
             for item in self.windows_tree.get_children():
                 self.windows_tree.delete(item)
-        self.update_calendar()
-        self.load_warehouse_data()
+
+            for item in self.materials_tree.get_children():
+                self.materials_tree.delete(item)
+
+            self.current_order_id = None
+            self.update_calendar()
+            self.load_warehouse_data()
 
     def import_order_from_excel(self):
         """Импорт заказа из Excel (всегда создаёт новый заказ)"""
